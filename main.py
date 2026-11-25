@@ -325,7 +325,7 @@ def backtest_symbol(
                 "pair": pair,
                 "interval": 60
             },
-            timeout=10
+            timeout=15
         )
 
         if response.status_code != 200:
@@ -354,26 +354,44 @@ def backtest_symbol(
             if key != "last"
         )
 
+        # Kraken có giới hạn số nến trả về.
+        # Lấy tối đa 720 nến mà API trả về.
+        candles = candles[-720:]
+
         history = []
 
-        for candle in candles[-100:]:
+        for candle in candles:
 
             history.append({
+
                 "time": int(candle[0]),
+
                 "open": float(candle[1]),
+
                 "high": float(candle[2]),
+
                 "low": float(candle[3]),
+
                 "close": float(candle[4]),
+
                 "vwap": float(candle[5]),
+
                 "volume": float(candle[6]),
+
                 "trades": int(candle[7])
+
             })
 
         result = run_backtest(
+
             history,
+
             initial_balance=initial_balance,
+
             fee_rate=fee_rate,
+
             slippage=slippage
+
         )
 
         result["symbol"] = symbol
@@ -387,6 +405,12 @@ def backtest_symbol(
         return result
 
     except Exception as e:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "message": str(e)
+        }
 
         return {
             "status": "error",
