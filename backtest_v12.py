@@ -7,7 +7,7 @@ import numpy as np
 from backtest_engine import run_backtest
 
 
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 
 
 # =========================================================
@@ -15,13 +15,9 @@ VERSION = "1.2.3"
 # =========================================================
 
 PAIR_MAP = {
-
     "BTCUSDT": "XBTUSD",
-
     "ETHUSDT": "ETHUSD",
-
     "SOLUSDT": "SOLUSD",
-
 }
 
 
@@ -30,15 +26,10 @@ PAIR_MAP = {
 # =========================================================
 
 ALLOWED_CANDLES = [
-
     720,
-
     1440,
-
     2160,
-
-    2880
-
+    2880,
 ]
 
 
@@ -49,17 +40,17 @@ ALLOWED_CANDLES = [
 def safe_float(value, default=0.0):
 
     try:
+        if value is None:
+            return float(default)
 
         value = float(value)
 
         if not math.isfinite(value):
-
             return float(default)
 
         return value
 
     except Exception:
-
         return float(default)
 
 
@@ -70,21 +61,18 @@ def safe_float(value, default=0.0):
 def native(value):
 
     if isinstance(value, dict):
-
         return {
             str(k): native(v)
             for k, v in value.items()
         }
 
     if isinstance(value, (list, tuple)):
-
         return [
             native(v)
             for v in value
         ]
 
     if isinstance(value, np.integer):
-
         return int(value)
 
     if isinstance(value, np.floating):
@@ -92,19 +80,16 @@ def native(value):
         value = float(value)
 
         if not math.isfinite(value):
-
             return None
 
         return value
 
     if isinstance(value, np.bool_):
-
         return bool(value)
 
     if isinstance(value, float):
 
         if not math.isfinite(value):
-
             return None
 
     return value
@@ -119,9 +104,9 @@ def calculate_vwap(df):
     df = df.copy()
 
     typical_price = (
-        df["high"] +
-        df["low"] +
-        df["close"]
+        df["high"]
+        + df["low"]
+        + df["close"]
     ) / 3.0
 
     volume = pd.to_numeric(
@@ -129,24 +114,16 @@ def calculate_vwap(df):
         errors="coerce"
     ).fillna(0)
 
-    cumulative_volume = (
-        volume.cumsum()
-    )
+    cumulative_volume = volume.cumsum()
 
     cumulative_pv = (
-        typical_price *
-        volume
+        typical_price * volume
     ).cumsum()
 
     df["vwap"] = np.where(
-
         cumulative_volume > 0,
-
-        cumulative_pv /
-        cumulative_volume,
-
+        cumulative_pv / cumulative_volume,
         typical_price
-
     )
 
     return df
@@ -161,6 +138,10 @@ def normalize_rows(rows):
     normalized = []
 
     for row in rows:
+
+        # ---------------------------------------------
+        # Already dictionary
+        # ---------------------------------------------
 
         if isinstance(row, dict):
 
@@ -193,16 +174,25 @@ def normalize_rows(rows):
                 ),
 
                 "trades": safe_float(
-                    row.get("trades")
-                )
+                    row.get("trades", 0)
+                ),
 
             })
 
             continue
 
-        # Kraken raw OHLC:
-        # time, open, high, low, close,
-        # vwap, volume, count
+        # ---------------------------------------------
+        # Kraken OHLC format
+        #
+        # time
+        # open
+        # high
+        # low
+        # close
+        # vwap
+        # volume
+        # count
+        # ---------------------------------------------
 
         if len(row) >= 8:
 
@@ -234,7 +224,7 @@ def normalize_rows(rows):
 
                 "trades": safe_float(
                     row[7]
-                )
+                ),
 
             })
 
@@ -247,34 +237,40 @@ def normalize_rows(rows):
 
 def find_local_csv(symbol):
 
+    symbol = symbol.upper()
+
     pair = PAIR_MAP.get(
-        symbol.upper(),
-        symbol.upper()
+        symbol,
+        symbol
+    )
+
+    base_dir = os.path.dirname(
+        os.path.abspath(__file__)
     )
 
     candidates = [
 
         os.path.join(
+            base_dir,
+            "historical",
+            f"{pair}_60.csv"
+        ),
+
+        os.path.join(
+            base_dir,
+            "historical",
+            f"{symbol}_60.csv"
+        ),
+
+        os.path.join(
             "historical",
             f"{pair}_60.csv"
         ),
 
         os.path.join(
             "historical",
-            f"{symbol.upper()}_60.csv"
+            f"{symbol}_60.csv"
         ),
-
-        os.path.join(
-            os.path.dirname(__file__),
-            "historical",
-            f"{pair}_60.csv"
-        ),
-
-        os.path.join(
-            os.path.dirname(__file__),
-            "historical",
-            f"{symbol.upper()}_60.csv"
-        )
 
     ]
 
@@ -302,6 +298,11 @@ def load_local_csv(
 
     if path is None:
 
+        pair = PAIR_MAP.get(
+            symbol.upper(),
+            symbol.upper()
+        )
+
         return {
 
             "status": "error",
@@ -309,7 +310,8 @@ def load_local_csv(
             "message": (
                 f"Không tìm thấy dữ liệu lịch sử "
                 f"cho {symbol}. "
-                f"Cần file historical/{PAIR_MAP.get(symbol, symbol)}_60.csv"
+                f"Cần file: "
+                f"historical/{pair}_60.csv"
             )
 
         }
@@ -333,7 +335,7 @@ def load_local_csv(
         }
 
     # -----------------------------------------------------
-    # Normalize columns
+    # Normalize column names
     # -----------------------------------------------------
 
     rename_map = {}
@@ -358,15 +360,17 @@ def load_local_csv(
             columns=rename_map
         )
 
-    required = [
+    # -----------------------------------------------------
+    # Required columns
+    # -----------------------------------------------------
 
+    required = [
         "time",
         "open",
         "high",
         "low",
         "close",
-        "volume"
-
+        "volume",
     ]
 
     for col in required:
@@ -383,6 +387,10 @@ def load_local_csv(
 
             }
 
+    # -----------------------------------------------------
+    # Trades
+    # -----------------------------------------------------
+
     if "trades" not in df.columns:
 
         if "count" in df.columns:
@@ -393,16 +401,18 @@ def load_local_csv(
 
             df["trades"] = 0
 
-    numeric_cols = [
+    # -----------------------------------------------------
+    # Numeric conversion
+    # -----------------------------------------------------
 
+    numeric_cols = [
         "time",
         "open",
         "high",
         "low",
         "close",
         "volume",
-        "trades"
-
+        "trades",
     ]
 
     for col in numeric_cols:
@@ -412,19 +422,31 @@ def load_local_csv(
             errors="coerce"
         )
 
+    # -----------------------------------------------------
+    # Remove invalid rows
+    # -----------------------------------------------------
+
     df = df.dropna(
         subset=[
             "time",
             "open",
             "high",
             "low",
-            "close"
+            "close",
         ]
     )
+
+    # -----------------------------------------------------
+    # Sort
+    # -----------------------------------------------------
 
     df = df.sort_values(
         "time"
     )
+
+    # -----------------------------------------------------
+    # Remove duplicated timestamps
+    # -----------------------------------------------------
 
     df = df.drop_duplicates(
         subset=["time"]
@@ -434,6 +456,10 @@ def load_local_csv(
         drop=True
     )
 
+    # -----------------------------------------------------
+    # Check enough candles
+    # -----------------------------------------------------
+
     if len(df) < candles:
 
         return {
@@ -442,18 +468,24 @@ def load_local_csv(
 
             "message": (
                 f"CSV chỉ có {len(df)} candles, "
-                f"cần {candles}"
+                f"cần {candles} candles"
             )
 
         }
 
-    # Take latest requested candles
+    # -----------------------------------------------------
+    # Take latest candles
+    # -----------------------------------------------------
 
     df = df.tail(
         candles
     ).reset_index(
         drop=True
     )
+
+    # -----------------------------------------------------
+    # VWAP
+    # -----------------------------------------------------
 
     df = calculate_vwap(
         df
@@ -467,7 +499,9 @@ def load_local_csv(
 
         "file": path,
 
-        "data": df
+        "actual_candles": len(df),
+
+        "data": df,
 
     }
 
@@ -481,8 +515,10 @@ def fetch_kraken_ohlc(
     interval=60
 ):
 
+    symbol = symbol.upper()
+
     pair = PAIR_MAP.get(
-        symbol.upper()
+        symbol
     )
 
     if pair is None:
@@ -505,7 +541,7 @@ def fetch_kraken_ohlc(
 
         "pair": pair,
 
-        "interval": interval
+        "interval": interval,
 
     }
 
@@ -533,6 +569,10 @@ def fetch_kraken_ohlc(
 
         }
 
+    # -----------------------------------------------------
+    # Kraken error
+    # -----------------------------------------------------
+
     if payload.get("error"):
 
         return {
@@ -549,6 +589,10 @@ def fetch_kraken_ohlc(
         "result",
         {}
     )
+
+    # -----------------------------------------------------
+    # Find pair key
+    # -----------------------------------------------------
 
     pair_key = None
 
@@ -621,7 +665,7 @@ def fetch_kraken_ohlc(
 
         "actual_candles": len(df),
 
-        "data": df
+        "data": df,
 
     }
 
@@ -641,6 +685,10 @@ def get_historical_candles(
         candles
     )
 
+    # -----------------------------------------------------
+    # Validate
+    # -----------------------------------------------------
+
     if candles not in ALLOWED_CANDLES:
 
         return {
@@ -655,7 +703,7 @@ def get_historical_candles(
         }
 
     # -----------------------------------------------------
-    # Kraken can provide about 720 candles.
+    # 720 candles -> Kraken
     # -----------------------------------------------------
 
     if candles <= 720:
@@ -699,12 +747,12 @@ def get_historical_candles(
 
             "actual_candles": len(df),
 
-            "data": df
+            "data": df,
 
         }
 
     # -----------------------------------------------------
-    # >720 requires local historical CSV
+    # >720 candles -> local CSV
     # -----------------------------------------------------
 
     return load_local_csv(
@@ -729,7 +777,9 @@ def build_summary(
 
             "status": "error",
 
-            "message": "Backtest result rỗng"
+            "message": (
+                "Backtest result rỗng"
+            )
 
         }
 
@@ -738,7 +788,7 @@ def build_summary(
         {}
     )
 
-    output = {
+    return native({
 
         "status": result.get(
             "status",
@@ -747,22 +797,18 @@ def build_summary(
 
         "version": VERSION,
 
+        "symbol": symbol,
+
+        "period": period,
+
         "strategy": result.get(
             "strategy",
             "Signal v1.6.1"
         ),
 
-        "symbol": symbol,
+        "summary": summary,
 
-        "period": period,
-
-        "summary": summary
-
-    }
-
-    return native(
-        output
-    )
+    })
 
 
 # =========================================================
@@ -772,16 +818,42 @@ def build_summary(
 def run_symbol_backtest(
     symbol,
     candles=720,
+    candle_count=None,
     initial_balance=1000.0,
     fee_rate=0.0004,
     slippage=0.0001
 ):
+    """
+    Chạy backtest cho một symbol.
+
+    Hỗ trợ cả:
+
+        candles=720
+
+    và:
+
+        candle_count=720
+
+    để tương thích với main.py.
+    """
 
     symbol = symbol.upper()
+
+    # -----------------------------------------------------
+    # Compatibility
+    # -----------------------------------------------------
+
+    if candle_count is not None:
+
+        candles = candle_count
 
     candles = int(
         candles
     )
+
+    # -----------------------------------------------------
+    # Load data
+    # -----------------------------------------------------
 
     historical = get_historical_candles(
         symbol,
@@ -794,9 +866,17 @@ def run_symbol_backtest(
 
     df = historical["data"]
 
+    # -----------------------------------------------------
+    # DataFrame -> records
+    # -----------------------------------------------------
+
     rows = df.to_dict(
         orient="records"
     )
+
+    # -----------------------------------------------------
+    # Run backtest engine
+    # -----------------------------------------------------
 
     try:
 
@@ -808,14 +888,13 @@ def run_symbol_backtest(
 
             fee_rate=fee_rate,
 
-            slippage=slippage
+            slippage=slippage,
 
         )
 
     except TypeError:
 
         # Compatibility fallback
-
         result = run_backtest(
             rows
         )
@@ -834,7 +913,11 @@ def run_symbol_backtest(
 
         }
 
-    return {
+    # -----------------------------------------------------
+    # Return
+    # -----------------------------------------------------
+
+    return native({
 
         "status": "ok",
 
@@ -844,19 +927,19 @@ def run_symbol_backtest(
 
         "candles": len(df),
 
+        "actual_candles": len(df),
+
         "source": historical.get(
             "source"
         ),
 
-        "result": native(
-            result
-        )
+        "result": result,
 
-    }
+    })
 
 
 # =========================================================
-# MULTI PERIOD
+# MULTI PERIOD BACKTEST
 # =========================================================
 
 def run_multi_period_backtest(
@@ -870,15 +953,10 @@ def run_multi_period_backtest(
     if periods is None:
 
         periods = [
-
             720,
-
             1440,
-
             2160,
-
-            2880
-
+            2880,
         ]
 
     results = []
@@ -895,9 +973,13 @@ def run_multi_period_backtest(
 
             fee_rate=fee_rate,
 
-            slippage=slippage
+            slippage=slippage,
 
         )
+
+        # -------------------------------------------------
+        # Successful
+        # -------------------------------------------------
 
         if result.get("status") == "ok":
 
@@ -974,9 +1056,13 @@ def run_multi_period_backtest(
                 "max_drawdown_pct":
                     summary.get(
                         "max_drawdown_pct"
-                    )
+                    ),
 
             })
+
+        # -------------------------------------------------
+        # Error
+        # -------------------------------------------------
 
         else:
 
@@ -989,7 +1075,7 @@ def run_multi_period_backtest(
                 "message": result.get(
                     "message",
                     "Unknown error"
-                )
+                ),
 
             })
 
@@ -1003,13 +1089,13 @@ def run_multi_period_backtest(
 
         "strategy": "Signal v1.6.1",
 
-        "periods": results
+        "periods": results,
 
     })
 
 
 # =========================================================
-# MULTI SYMBOL
+# MULTI SYMBOL BACKTEST
 # =========================================================
 
 def run_multi_backtest(
@@ -1023,27 +1109,18 @@ def run_multi_backtest(
     if symbols is None:
 
         symbols = [
-
             "BTCUSDT",
-
             "ETHUSDT",
-
-            "SOLUSDT"
-
+            "SOLUSDT",
         ]
 
     if periods is None:
 
         periods = [
-
             720,
-
             1440,
-
             2160,
-
-            2880
-
+            2880,
         ]
 
     all_results = []
@@ -1060,7 +1137,7 @@ def run_multi_backtest(
 
             fee_rate=fee_rate,
 
-            slippage=slippage
+            slippage=slippage,
 
         )
 
@@ -1125,17 +1202,25 @@ def run_multi_backtest(
 
                 failed += 1
 
-    overall_win_rate = (
+    # -----------------------------------------------------
+    # Overall win rate
+    # -----------------------------------------------------
 
-        total_wins /
-        total_trades *
-        100
+    if total_trades > 0:
 
-        if total_trades > 0
+        overall_win_rate = (
+            total_wins /
+            total_trades *
+            100
+        )
 
-        else 0.0
+    else:
 
-    )
+        overall_win_rate = 0.0
+
+    # -----------------------------------------------------
+    # Return
+    # -----------------------------------------------------
 
     return native({
 
@@ -1170,12 +1255,12 @@ def run_multi_backtest(
                 total_losses,
 
             "overall_win_rate":
-                overall_win_rate
+                overall_win_rate,
 
         },
 
         "results":
-            all_results
+            all_results,
 
     })
 
@@ -1187,7 +1272,11 @@ def run_multi_backtest(
 if __name__ == "__main__":
 
     print(
-        "backtest_v12.py"
+        "===================================="
+    )
+
+    print(
+        "BACKTEST V1.2"
     )
 
     print(
@@ -1206,5 +1295,17 @@ if __name__ == "__main__":
     )
 
     print(
+        "run_symbol_backtest = OK"
+    )
+
+    print(
+        "run_multi_period_backtest = OK"
+    )
+
+    print(
         "run_multi_backtest = OK"
+    )
+
+    print(
+        "===================================="
     )
