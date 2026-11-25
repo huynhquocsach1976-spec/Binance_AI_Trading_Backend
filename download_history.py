@@ -16,16 +16,12 @@ TARGET_CANDLES = 3000
 KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
 
-def fetch_ohlc(pair, interval, since=None):
+def fetch_ohlc(pair, interval, since):
     params = {
         "pair": pair,
         "interval": interval,
+        "since": since
     }
-
-    if since is not None:
-        params["since"] = since
-
-    print(f"Đang tải dữ liệu: since={since}")
 
     response = requests.get(
         KRAKEN_URL,
@@ -47,57 +43,56 @@ def fetch_ohlc(pair, interval, since=None):
         if key != "last"
     )
 
-    rows = result[pair_key]
-
-    return rows, result.get("last")
+    return result[pair_key]
 
 
 def convert_rows(rows):
-    data = []
+    result = []
 
     for row in rows:
-        data.append({
+        result.append({
             "timestamp": int(row[0]),
             "open": float(row[1]),
             "high": float(row[2]),
             "low": float(row[3]),
             "close": float(row[4]),
             "volume": float(row[6]),
-            "trades": int(row[7]),
+            "trades": int(row[7])
         })
 
-    return data
+    return result
 
 
 def main():
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     all_rows = []
 
-    # Lần đầu lấy dữ liệu hiện tại
-    rows, last = fetch_ohlc(PAIR, INTERVAL)
+    # =========================================================
+    # Lấy mốc thời gian hiện tại
+    # =========================================================
 
-    converted = convert_rows(rows)
-    all_rows.extend(converted)
+    now = int(datetime.now(timezone.utc).timestamp())
 
-    print(f"Đã lấy: {len(converted)} nến")
+    # =========================================================
+    # Kraken trả khoảng 720 candles/lần.
+    # Ta lùi từng đoạn khoảng 700 giờ.
+    # =========================================================
 
-    # Kraken giới hạn số lượng trả về.
-    # Tiếp tục lùi về quá khứ.
+    since = now - (720 * 60)
+
     while len(all_rows) < TARGET_CANDLES:
 
-        oldest_timestamp = min(
-            row["timestamp"]
-            for row in all_rows
+        print(
+            f"Downloading since "
+            f"{datetime.fromtimestamp(since, tz=timezone.utc)}"
         )
 
-        # Lùi trước nến cũ nhất 720 nến
-        since = oldest_timestamp - (720 * 60)
-
-        rows, _ = fetch_ohlc(
+        rows = fetch_ohlc(
             PAIR,
             INTERVAL,
-            since=since
+            since
         )
 
         if not rows:
@@ -107,20 +102,34 @@ def main():
         converted = convert_rows(rows)
 
         print(
-            f"Đợt mới: {len(converted)} nến | "
-            f"Tổng trước lọc: {len(all_rows) + len(converted)}"
+            f"Received: {len(converted)} candles"
         )
 
         all_rows.extend(converted)
 
-        # Tránh gọi API quá nhanh
+        # Lùi tiếp về quá khứ.
+        #
+        # Quan trọng:
+        # lấy timestamp của candle đầu tiên
+        # rồi lùi thêm 1 candle.
+        #
+        oldest = min(
+            row["timestamp"]
+            for row in converted
+        )
+
+        since = oldest - 60
+
         time.sleep(1)
 
-        # Nếu API trả dữ liệu quá ít thì dừng
         if len(converted) < 10:
+            print("API trả quá ít dữ liệu, dừng.")
             break
 
-    # Xóa timestamp trùng
+    # =========================================================
+    # Xóa candle trùng
+    # =========================================================
+
     unique = {}
 
     for row in all_rows:
@@ -128,18 +137,20 @@ def main():
 
     all_rows = list(unique.values())
 
-    # Sắp xếp từ cũ -> mới
+    # Cũ -> mới
     all_rows.sort(
         key=lambda x: x["timestamp"]
     )
 
-    # Chỉ giữ TARGET_CANDLES nến cuối cùng
+    # =========================================================
+    # Chỉ giữ TARGET_CANDLES
+    # =========================================================
+
     if len(all_rows) > TARGET_CANDLES:
         all_rows = all_rows[-TARGET_CANDLES:]
 
     df = pd.DataFrame(all_rows)
 
-    # Đảm bảo đúng thứ tự cột
     df = df[
         [
             "timestamp",
@@ -148,7 +159,7 @@ def main():
             "low",
             "close",
             "volume",
-            "trades",
+            "trades"
         ]
     ]
 
@@ -157,14 +168,20 @@ def main():
         index=False
     )
 
+    # =========================================================
+    # Thông tin kết quả
+    # =========================================================
+
     print()
     print("=" * 60)
-    print("HOÀN TẤT")
+    print("DOWNLOAD COMPLETED")
     print("=" * 60)
+
     print(f"File: {OUTPUT_FILE}")
-    print(f"Số nến: {len(df)}")
+    print(f"Candles: {len(df)}")
 
     if len(df) > 0:
+
         first_time = datetime.fromtimestamp(
             int(df.iloc[0]["timestamp"]),
             tz=timezone.utc
@@ -175,15 +192,13 @@ def main():
             tz=timezone.utc
         )
 
-        print(f"Từ: {first_time}")
-        print(f"Đến: {last_time}")
+        print(f"From: {first_time}")
+        print(f"To:   {last_time}")
 
     print()
-    print("5 dòng đầu:")
     print(df.head())
 
     print()
-    print("5 dòng cuối:")
     print(df.tail())
 
 
