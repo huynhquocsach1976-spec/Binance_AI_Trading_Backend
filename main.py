@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from datetime import datetime
+from ai_analyzer import analyze_market
+from pydantic import BaseModel
 import requests
 
 app = FastAPI(
@@ -200,3 +202,18 @@ def get_history(symbol: str):
             "symbol": symbol,
             "message": str(e)
         }
+class AIAnalysisRequest(BaseModel):
+    symbol: str = "BTCUSDT"
+    interval: str = "1h"
+    data: list
+
+
+@app.post("/ai/analyze")
+def ai_analyze(request: AIAnalysisRequest):
+
+    result = analyze_market(request.data)
+
+    result["symbol"] = request.symbol
+    result["timeframe"] = request.interval
+
+    return result
