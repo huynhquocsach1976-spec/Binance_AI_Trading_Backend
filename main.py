@@ -1,47 +1,56 @@
 from fastapi import FastAPI
 from datetime import datetime
-from ai_analyzer import analyze_market
-from backtest_engine import run_backtest
 from pydantic import BaseModel
-from backtest_v12 import run_multi_backtest, build_summary
 import requests
 
+from ai_analyzer import analyze_market
+from backtest_engine import run_backtest
+from backtest_v12 import run_multi_backtest, build_summary
+
+
+# ============================================================
+# FASTAPI
+# ============================================================
 
 app = FastAPI(
     title="Binance AI Trading Pro Backend",
-    description="Backend theo dõi và phân tích thị trường crypto",
-    version="1.5.0"
+    description="AI phân tích và backtest thị trường crypto",
+    version="1.2.0"
 )
 
 
-# =========================================================
-# HOME
-# =========================================================
+# ============================================================
+# ROOT
+# ============================================================
 
 @app.get("/")
-def home():
+def root():
     return {
         "status": "ok",
         "message": "Binance AI Trading Pro Backend đang chạy!",
+        "version": "1.2.0",
+        "signal_version": "1.6.1",
         "time": datetime.now().isoformat()
     }
 
 
-# =========================================================
+# ============================================================
 # HEALTH
-# =========================================================
+# ============================================================
 
 @app.get("/health")
 def health():
     return {
-        "status": "healthy",
-        "message": "Backend hoạt động bình thường"
+        "status": "ok",
+        "message": "Backend đang hoạt động bình thường",
+        "signal_version": "1.6.1",
+        "backtest_version": "1.2.0"
     }
 
 
-# =========================================================
+# ============================================================
 # PRICE
-# =========================================================
+# ============================================================
 
 @app.get("/price/{symbol}")
 def get_price(symbol: str):
@@ -72,7 +81,7 @@ def get_price(symbol: str):
             params={
                 "pair": pair
             },
-            timeout=10
+            timeout=15
         )
 
         if response.status_code != 200:
@@ -93,19 +102,14 @@ def get_price(symbol: str):
 
         result = data["result"]
 
-        ticker = next(
-            iter(result.values())
-        )
+        ticker = next(iter(result.values()))
 
-        price = float(
-            ticker["c"][0]
-        )
+        price = float(ticker["c"][0])
 
         return {
             "status": "ok",
             "symbol": symbol,
             "price": price,
-            "currency": "USD",
             "source": "Kraken"
         }
 
@@ -118,9 +122,9 @@ def get_price(symbol: str):
         }
 
 
-# =========================================================
+# ============================================================
 # HISTORY
-# =========================================================
+# ============================================================
 
 @app.get("/history/{symbol}")
 def get_history(symbol: str):
@@ -152,7 +156,7 @@ def get_history(symbol: str):
                 "pair": pair,
                 "interval": 60
             },
-            timeout=10
+            timeout=15
         )
 
         if response.status_code != 200:
@@ -179,9 +183,11 @@ def get_history(symbol: str):
             if key != "last"
         )
 
+        candles = candles[-100:]
+
         history = []
 
-        for candle in candles[-100:]:
+        for candle in candles:
 
             history.append({
                 "time": int(candle[0]),
@@ -212,69 +218,30 @@ def get_history(symbol: str):
         }
 
 
-# =========================================================
+# ============================================================
 # AI ANALYZE
-# =========================================================
+# Signal v1.6.1
+# ============================================================
 
-class AIAnalysisRequest(BaseModel):
+class AnalyzeRequest(BaseModel):
 
-    symbol: str = "BTCUSDT"
-    interval: str = "1h"
     data: list
 
 
 @app.post("/ai/analyze")
-def ai_analyze(request: AIAnalysisRequest):
+def ai_analyze(request: AnalyzeRequest):
 
     try:
 
-        data = request.data
-
-        # Trường hợp gửi trực tiếp danh sách nến
-        if (
-            data
-            and isinstance(data[0], dict)
-            and "close" in data[0]
-        ):
-
-            candles = data
-
-        # Trường hợp gửi dạng:
-        # [{"status":"ok","data":[...]}]
-        elif (
-            data
-            and isinstance(data[0], dict)
-            and "data" in data[0]
-        ):
-
-            candles = data[0]["data"]
-
-        else:
-
-            return {
-                "status": "error",
-                "message": "Cấu trúc dữ liệu nến không hợp lệ"
-            }
+        candles = request.data
 
         if len(candles) < 50:
-
             return {
                 "status": "error",
-                "message": (
-                    f"Cần ít nhất 50 nến, "
-                    f"hiện tại có {len(candles)} nến"
-                )
+                "message": "Cần ít nhất 50 candles"
             }
 
-        result = analyze_market(
-            candles
-        )
-
-        result["symbol"] = request.symbol.upper()
-
-        result["timeframe"] = request.interval
-
-        result["candle_count"] = len(candles)
+        result = analyze_market(candles)
 
         return result
 
@@ -286,9 +253,10 @@ def ai_analyze(request: AIAnalysisRequest):
         }
 
 
-# =========================================================
-# BACKTEST v1.0
-# =========================================================
+# ============================================================
+# BACKTEST v1.1
+# Giữ API cũ
+# ============================================================
 
 @app.get("/backtest/{symbol}")
 def backtest_symbol(
@@ -307,7 +275,6 @@ def backtest_symbol(
     }
 
     if symbol not in pair_map:
-
         return {
             "status": "error",
             "symbol": symbol,
@@ -330,7 +297,6 @@ def backtest_symbol(
         )
 
         if response.status_code != 200:
-
             return {
                 "status": "error",
                 "symbol": symbol,
@@ -340,7 +306,6 @@ def backtest_symbol(
         data = response.json()
 
         if data.get("error"):
-
             return {
                 "status": "error",
                 "symbol": symbol,
@@ -355,8 +320,6 @@ def backtest_symbol(
             if key != "last"
         )
 
-        # Kraken có giới hạn số nến trả về.
-        # Lấy tối đa 720 nến mà API trả về.
         candles = candles[-720:]
 
         history = []
@@ -364,46 +327,29 @@ def backtest_symbol(
         for candle in candles:
 
             history.append({
-
                 "time": int(candle[0]),
-
                 "open": float(candle[1]),
-
                 "high": float(candle[2]),
-
                 "low": float(candle[3]),
-
                 "close": float(candle[4]),
-
                 "vwap": float(candle[5]),
-
                 "volume": float(candle[6]),
-
                 "trades": int(candle[7])
-
             })
 
-        result = run_backtest(
-
+        backtest_result = run_backtest(
             history,
-
             initial_balance=initial_balance,
-
             fee_rate=fee_rate,
-
             slippage=slippage
-
         )
 
-        result["symbol"] = symbol
+        backtest_result["symbol"] = symbol
+        backtest_result["timeframe"] = "1h"
+        backtest_result["candle_count"] = len(history)
+        backtest_result["source"] = "Kraken"
 
-        result["timeframe"] = "1h"
-
-        result["candle_count"] = len(history)
-
-        result["source"] = "Kraken"
-
-        return result
+        return backtest_result
 
     except Exception as e:
 
@@ -413,18 +359,21 @@ def backtest_symbol(
             "message": str(e)
         }
 
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "message": str(e)
-        }
-        @app.get("/backtest-all")
+
+# ============================================================
+# BACKTEST v1.2
+# MULTI-SYMBOL + MULTI-PERIOD
+# ============================================================
+
+@app.get("/backtest-all")
 def backtest_all(
     initial_balance: float = 1000.0,
     fee_rate: float = 0.0004,
     slippage: float = 0.0001
 ):
+
     try:
+
         result = run_multi_backtest(
             symbols=[
                 "BTCUSDT",
@@ -449,7 +398,66 @@ def backtest_all(
         return result
 
     except Exception as e:
+
         return {
             "status": "error",
+            "version": "1.2.0",
+            "message": str(e)
+        }
+
+
+# ============================================================
+# BACKTEST v1.2 - 1 SYMBOL
+# Cho phép test riêng một coin
+# ============================================================
+
+@app.get("/backtest-v12/{symbol}")
+def backtest_v12_symbol(
+    symbol: str,
+    candles: int = 720,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001
+):
+
+    symbol = symbol.upper()
+
+    allowed_periods = [
+        720,
+        1440,
+        2160,
+        2880
+    ]
+
+    if candles not in allowed_periods:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "message": (
+                "candles phải là một trong: "
+                "720, 1440, 2160, 2880"
+            )
+        }
+
+    try:
+
+        from backtest_v12 import run_symbol_backtest
+
+        result = run_symbol_backtest(
+            symbol=symbol,
+            candle_count=candles,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage
+        )
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
             "message": str(e)
         }
