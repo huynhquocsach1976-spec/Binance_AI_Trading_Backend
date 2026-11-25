@@ -1,5 +1,5 @@
-import os
 import io
+import os
 import zipfile
 import requests
 import pandas as pd
@@ -9,25 +9,30 @@ import pandas as pd
 # CONFIG
 # ============================================================
 
+SYMBOL = "XBTUSD"
+TIMEFRAME = "60"
+
 OUTPUT_DIR = "historical"
 OUTPUT_FILE = os.path.join(
     OUTPUT_DIR,
-    "XBTUSD_60.csv"
+    f"{SYMBOL}_{TIMEFRAME}.csv"
 )
 
-TARGET_CANDLES = 2160
-MIN_CANDLES = 1440
+# Cần ít nhất 2880 candles cho Backtest v1.2
+MIN_CANDLES = 2880
 
-KRAKEN_BASE = (
-    "https://assets.kraken.com/"
-    "marketing/institutions/"
-)
+# Lấy dư dữ liệu để an toàn
+TARGET_CANDLES = 4000
 
-# Dùng 2 quý để chắc chắn đủ 1440 candles.
+# Kraken quarterly OHLCVT archives
 QUARTERS = [
+    "2026Q1",
     "2026Q2",
     "2026Q3",
+    "2025Q4",
 ]
+
+BASE_URL = "https://assets.kraken.com/api/0/public/OHLCVT"
 
 
 # ============================================================
@@ -35,203 +40,185 @@ QUARTERS = [
 # ============================================================
 
 def download_quarter(quarter):
+    """
+    Download Kraken quarterly OHLCVT ZIP.
 
-    url = (
-        KRAKEN_BASE
-        + f"Kraken_OHLCVT_{quarter}.zip"
-    )
+    Returns:
+        bytes hoặc None
+    """
+
+    urls = [
+        f"https://assets.kraken.com/spot/ohlcvt/{quarter}/Kraken_OHLCVT_{quarter}.zip",
+        f"https://assets.kraken.com/spot/ohlcvt/{quarter}/Kraken_OHLCVT_{quarter}.zip",
+        f"https://downloads.kraken.com/ohlcvt/Kraken_OHLCVT_{quarter}.zip",
+    ]
 
     print()
     print("=" * 70)
-    print(f"DOWNLOADING {quarter}")
+    print(f"Downloading Kraken archive: {quarter}")
     print("=" * 70)
 
-    print("URL:")
-    print(url)
+    for url in urls:
 
-    response = requests.get(
-        url,
-        timeout=180,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
-    )
+        print(f"Trying: {url}")
+
+        try:
+            response = requests.get(
+                url,
+                timeout=120
+            )
+
+            print(
+                f"HTTP {response.status_code} - "
+                f"{len(response.content):,} bytes"
+            )
+
+            if response.status_code == 200:
+
+                print(f"SUCCESS: {quarter}")
+
+                return response.content
+
+        except Exception as e:
+
+            print(
+                f"Download error for {quarter}: {e}"
+            )
 
     print(
-        "HTTP:",
-        response.status_code
+        f"WARNING: Could not download {quarter}"
     )
 
-    response.raise_for_status()
-
-    print(
-        "Downloaded:",
-        round(
-            len(response.content) / 1024 / 1024,
-            2
-        ),
-        "MB"
-    )
-
-    return response.content
+    return None
 
 
 # ============================================================
-# FIND EXACT XBTUSD FILE
+# FIND EXACT FILE
 # ============================================================
 
-def find_exact_xbtusd_file(zip_file):
+def find_symbol_file(zip_bytes):
 
-    names = zip_file.namelist()
+    """
+    Find EXACT:
 
-    candidates = []
+        XBTUSD_60.csv
 
-    for name in names:
+    inside Kraken ZIP.
 
-        filename = os.path.basename(name)
+    Không dùng contains() để tránh lấy nhầm:
+        AIXBTUSD_60.csv
+        XBTUSD1_60.csv
+        XBTUSDC_60.csv
+        XBTUSDT_60.csv
+    """
 
-        if filename == "XBTUSD_60.csv":
-            candidates.append(name)
+    with zipfile.ZipFile(
+        io.BytesIO(zip_bytes)
+    ) as z:
 
-    if not candidates:
+        names = z.namelist()
+
+        target = f"{SYMBOL}_{TIMEFRAME}.csv"
 
         print()
-        print("Không tìm thấy XBTUSD_60.csv.")
+        print("Searching exact file:")
+        print(target)
 
-        print()
-        print("Các file XBTUSD liên quan:")
+        # Tìm basename chính xác
+        matches = []
 
         for name in names:
 
-            filename = os.path.basename(name)
+            if os.path.basename(name) == target:
 
-            if "XBTUSD" in filename:
-                print(
-                    " -",
-                    name
-                )
+                matches.append(name)
 
-        raise RuntimeError(
-            "Không tìm thấy chính xác "
-            "XBTUSD_60.csv trong ZIP."
-        )
+        if not matches:
 
-    if len(candidates) > 1:
+            print()
+            print("ERROR: Exact file not found.")
+
+            print()
+            print("Possible XBTUSD files:")
+
+            for name in names:
+
+                base = os.path.basename(name)
+
+                if (
+                    "XBTUSD" in base
+                    and base.endswith(".csv")
+                ):
+
+                    print("  ", name)
+
+            return None
+
+        selected = matches[0]
 
         print()
-        print("Các file trùng tên:")
+        print("Selected:")
+        print(selected)
 
-        for name in candidates:
-            print(
-                " -",
-                name
-            )
+        data = z.read(selected)
 
-    selected = candidates[0]
-
-    print()
-    print(
-        "Selected exact file:",
-        selected
-    )
-
-    return selected
+        return data
 
 
 # ============================================================
 # READ CSV
 # ============================================================
 
-def read_xbtusd_60(content, quarter):
+def read_kraken_csv(csv_bytes):
 
-    print()
-    print("=" * 70)
-    print(
-        f"READING XBTUSD_60.csv - {quarter}"
-    )
-    print("=" * 70)
+    """
+    Kraken OHLCVT format:
 
-    with zipfile.ZipFile(
-        io.BytesIO(content)
-    ) as zip_file:
+    timestamp
+    open
+    high
+    low
+    close
+    volume
+    trades
+    """
 
-        filename = find_exact_xbtusd_file(
-            zip_file
-        )
+    columns = [
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trades",
+    ]
 
-        raw = zip_file.read(
-            filename
-        )
-
-    print(
-        "CSV size:",
-        round(
-            len(raw) / 1024 / 1024,
-            2
-        ),
-        "MB"
-    )
-
-    # Kraken OHLCVT không có header.
     df = pd.read_csv(
-        io.BytesIO(raw),
-        header=None
+        io.BytesIO(csv_bytes),
+        header=None,
+        names=columns
     )
 
-    print(
-        "Raw rows:",
-        len(df)
-    )
+    # Nếu file có header thì loại bỏ
+    if len(df) > 0:
 
-    print(
-        "Raw columns:",
-        len(df.columns)
-    )
+        first_value = str(
+            df.iloc[0]["timestamp"]
+        ).lower()
 
-    if len(df.columns) < 7:
+        if first_value == "timestamp":
 
-        raise RuntimeError(
-            "XBTUSD_60.csv không đủ 7 cột."
-        )
+            df = df.iloc[1:].copy()
 
-    df = df.iloc[:, :7].copy()
-
-    df.columns = [
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "trades"
-    ]
-
-    return df
-
-
-# ============================================================
-# CLEAN
-# ============================================================
-
-def clean_dataframe(df):
-
-    numeric_columns = [
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "trades"
-    ]
-
-    for column in numeric_columns:
+    # Convert numeric
+    for column in columns:
 
         df[column] = pd.to_numeric(
             df[column],
             errors="coerce"
         )
 
+    # Remove invalid rows
     df = df.dropna(
         subset=[
             "timestamp",
@@ -239,38 +226,24 @@ def clean_dataframe(df):
             "high",
             "low",
             "close",
-            "volume"
+            "volume",
+            "trades",
         ]
     )
 
-    df["timestamp"] = (
-        df["timestamp"]
-        .astype("int64")
-    )
-
-    df["trades"] = (
-        df["trades"]
-        .fillna(1)
-        .astype("int64")
-    )
-
-    # Loại duplicate timestamp.
+    # Remove duplicate timestamps
     df = df.drop_duplicates(
-        subset=[
-            "timestamp"
-        ]
+        subset=["timestamp"]
     )
 
-    # Sắp xếp thời gian.
+    # Sort oldest -> newest
     df = df.sort_values(
         "timestamp"
     )
 
-    df = df.reset_index(
+    return df.reset_index(
         drop=True
     )
-
-    return df
 
 
 # ============================================================
@@ -279,65 +252,77 @@ def clean_dataframe(df):
 
 def main():
 
+    print()
+    print("=" * 70)
+    print("KRAKEN BTC 1H HISTORICAL DATA DOWNLOADER")
+    print("=" * 70)
+
+    print()
+    print(f"Symbol        : {SYMBOL}")
+    print(f"Timeframe     : {TIMEFRAME}")
+    print(f"Minimum       : {MIN_CANDLES}")
+    print(f"Target        : {TARGET_CANDLES}")
+    print(f"Output        : {OUTPUT_FILE}")
+
     all_data = []
 
     # --------------------------------------------------------
-    # Download Q2 + Q3
+    # Download quarterly archives
     # --------------------------------------------------------
 
     for quarter in QUARTERS:
 
-        content = download_quarter(
+        zip_bytes = download_quarter(
             quarter
         )
 
-        df = read_xbtusd_60(
-            content,
-            quarter
+        if zip_bytes is None:
+
+            continue
+
+        csv_bytes = find_symbol_file(
+            zip_bytes
         )
 
-        df = clean_dataframe(
-            df
-        )
+        if csv_bytes is None:
 
-        print(
-            f"{quarter} candles:",
-            len(df)
-        )
+            continue
 
-        if len(df) > 0:
+        try:
 
-            first_time = pd.to_datetime(
-                df.iloc[0]["timestamp"],
-                unit="s",
-                utc=True
-            )
-
-            last_time = pd.to_datetime(
-                df.iloc[-1]["timestamp"],
-                unit="s",
-                utc=True
+            df = read_kraken_csv(
+                csv_bytes
             )
 
             print(
-                "From:",
-                first_time
+                f"{quarter}: "
+                f"{len(df):,} candles"
             )
+
+            if len(df) > 0:
+
+                all_data.append(df)
+
+        except Exception as e:
 
             print(
-                "To:",
-                last_time
+                f"ERROR reading {quarter}: {e}"
             )
 
-        all_data.append(df)
+    # --------------------------------------------------------
+    # Check data
+    # --------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Combine
-    # --------------------------------------------------------
+    if not all_data:
+
+        raise RuntimeError(
+            "Không tải được dữ liệu XBTUSD_60.csv "
+            "từ Kraken quarterly archives."
+        )
 
     print()
     print("=" * 70)
-    print("COMBINING QUARTERS")
+    print("MERGING DATA")
     print("=" * 70)
 
     df = pd.concat(
@@ -345,22 +330,27 @@ def main():
         ignore_index=True
     )
 
-    print(
-        "Before duplicate removal:",
-        len(df)
+    # Remove duplicates
+    df = df.drop_duplicates(
+        subset=["timestamp"]
     )
 
-    df = clean_dataframe(
-        df
+    # Sort
+    df = df.sort_values(
+        "timestamp"
+    )
+
+    df = df.reset_index(
+        drop=True
     )
 
     print(
-        "After duplicate removal:",
-        len(df)
+        f"Total merged candles: "
+        f"{len(df):,}"
     )
 
     # --------------------------------------------------------
-    # Keep latest 2160 candles
+    # Keep latest candles
     # --------------------------------------------------------
 
     if len(df) > TARGET_CANDLES:
@@ -369,12 +359,30 @@ def main():
             TARGET_CANDLES
         ).copy()
 
-        df = df.reset_index(
-            drop=True
+    # --------------------------------------------------------
+    # Final validation
+    # --------------------------------------------------------
+
+    actual = len(df)
+
+    print()
+    print("=" * 70)
+    print("FINAL VALIDATION")
+    print("=" * 70)
+
+    print(
+        f"Final candles: {actual:,}"
+    )
+
+    if actual < MIN_CANDLES:
+
+        raise RuntimeError(
+            f"Chỉ có {actual} candles, "
+            f"cần ít nhất {MIN_CANDLES} candles."
         )
 
     # --------------------------------------------------------
-    # Save
+    # Create output directory
     # --------------------------------------------------------
 
     os.makedirs(
@@ -382,111 +390,57 @@ def main():
         exist_ok=True
     )
 
-    df = df[
-        [
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "trades"
-        ]
-    ]
+    # --------------------------------------------------------
+    # Save CSV
+    # --------------------------------------------------------
 
     df.to_csv(
         OUTPUT_FILE,
         index=False
     )
 
-    # --------------------------------------------------------
-    # Result
-    # --------------------------------------------------------
-
     print()
     print("=" * 70)
-    print("DOWNLOAD COMPLETED")
+    print("SUCCESS")
     print("=" * 70)
 
-    print()
     print(
-        "Output:",
-        OUTPUT_FILE
+        f"Saved: {OUTPUT_FILE}"
     )
 
     print(
-        "Candles:",
-        len(df)
+        f"Candles: {len(df):,}"
     )
 
-    if len(df) > 0:
-
-        first_time = pd.to_datetime(
-            df.iloc[0]["timestamp"],
-            unit="s",
-            utc=True
-        )
-
-        last_time = pd.to_datetime(
-            df.iloc[-1]["timestamp"],
-            unit="s",
-            utc=True
-        )
-
-        print()
-        print(
-            "From:",
-            first_time
-        )
-
-        print(
-            "To:",
-            last_time
-        )
-
     print()
-    print("=" * 70)
-    print("FIRST 5")
-    print("=" * 70)
+    print("Columns:")
 
     print(
-        df.head().to_string(
-            index=False
-        )
+        list(df.columns)
+    )
+
+    print()
+    print("First candle:")
+
+    print(
+        df.iloc[0].to_dict()
+    )
+
+    print()
+    print("Last candle:")
+
+    print(
+        df.iloc[-1].to_dict()
     )
 
     print()
     print("=" * 70)
-    print("LAST 5")
-    print("=" * 70)
-
     print(
-        df.tail().to_string(
-            index=False
-        )
+        "Historical data is ready for Backtest v1.2"
     )
-
-    # --------------------------------------------------------
-    # Validate
-    # --------------------------------------------------------
-
-    if len(df) < MIN_CANDLES:
-
-        raise RuntimeError(
-            f"Chỉ có {len(df)} candles, "
-            f"cần ít nhất {MIN_CANDLES} candles."
-        )
-
-    print()
     print("=" * 70)
-    print("VALIDATION PASSED")
-    print("=" * 70)
-
-    print(
-        f"OK: {len(df)} candles >= "
-        f"{MIN_CANDLES}"
-    )
 
 
 if __name__ == "__main__":
+
     main()
