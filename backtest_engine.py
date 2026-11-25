@@ -424,6 +424,69 @@ def run_backtest(
             )
         ).upper()
 
+        # =================================================
+        # DIAGNOSTIC METADATA
+        #
+        # Chỉ đọc dữ liệu từ Signal.
+        # KHÔNG thay đổi logic giao dịch.
+        # =================================================
+
+        raw_score = signal_result.get(
+            "score",
+            None
+        )
+
+        raw_market_condition = signal_result.get(
+            "market_condition",
+            signal_result.get(
+                "market_regime",
+                signal_result.get(
+                    "regime",
+                    signal_result.get(
+                        "condition",
+                        None
+                    )
+                )
+            )
+        )
+
+        # -------------------------------------------------
+        # Normalize score
+        # -------------------------------------------------
+
+        diagnostic_score = None
+
+        if raw_score is not None:
+
+            try:
+
+                diagnostic_score = safe_int(
+                    raw_score,
+                    0
+                )
+
+            except Exception:
+
+                diagnostic_score = None
+
+        # -------------------------------------------------
+        # Normalize market condition
+        # -------------------------------------------------
+
+        if raw_market_condition is None:
+
+            diagnostic_market_condition = "UNKNOWN"
+
+        else:
+
+            diagnostic_market_condition = str(
+                raw_market_condition
+            ).upper().strip()
+
+            if not diagnostic_market_condition:
+
+                diagnostic_market_condition = "UNKNOWN"
+
         # -------------------------------------------------
         # SIGNAL COUNTERS
         # -------------------------------------------------
@@ -815,14 +878,27 @@ def run_backtest(
 
         # =================================================
         # TRADE RECORD
+        #
+        # Diagnostic v1.1:
+        # thêm score + market_condition.
+        # Không thay đổi trading logic.
         # =================================================
 
         trade = {
 
             "trade_id": len(trades) + 1,
 
+            # Signal
             "signal": signal,
 
+            # Diagnostic metadata
+            "score": diagnostic_score,
+
+            "market_condition": (
+                diagnostic_market_condition
+            ),
+
+            # Entry / Exit
             "entry_index": entry_index,
 
             "exit_index": exit_index,
@@ -831,12 +907,17 @@ def run_backtest(
 
             "exit_price": actual_exit_price,
 
+            # Risk
             "stop_loss": stop_loss,
 
             "take_profit": take_profit,
 
+            # Exit
             "reason": exit_reason,
 
+            "exit_reason": exit_reason,
+
+            # Performance
             "return_pct": trade_return * 100,
 
             "profit_before_fee": profit_before_fee,
