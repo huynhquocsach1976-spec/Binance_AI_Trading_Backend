@@ -1,10 +1,25 @@
+# ============================================================
+# Binance AI Trading Pro
+# Backtest v1.2.2
+#
+# Strategy: Signal v1.6.1
+# Data source: Kraken
+#
+# Compatible with:
+#   candles=
+#   candle_count=
+#
+# KHÔNG sửa ai_analyzer.py
+# KHÔNG sửa backtest_engine.py
+# ============================================================
+
 import requests
 import time
 
 from backtest_engine import run_backtest
 
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
 
@@ -14,37 +29,16 @@ PAIR_MAP = {
     "SOLUSDT": "SOLUSD",
 }
 
-# Kraken OHLC API thường giới hạn số nến trả về mỗi request.
-# 1h = 3600 giây.
 TIMEFRAME = "1h"
-INTERVAL_MINUTES = 60
+INTERVAL = 60
 INTERVAL_SECONDS = 3600
 
-# Giới hạn mỗi lần lấy dữ liệu.
-KRAKEN_BATCH_LIMIT = 720
-
 
 # ============================================================
-# HELPER
+# NORMALIZE KRAKEN CANDLE
 # ============================================================
 
-def _normalize_candle(row):
-    """
-    Kraken OHLC format:
-
-    [
-        time,
-        open,
-        high,
-        low,
-        close,
-        vwap,
-        volume,
-        count
-    ]
-
-    Chuyển về format mà backtest_engine đang sử dụng.
-    """
+def normalize_candle(row):
 
     return {
         "time": int(row[0]),
@@ -59,23 +53,14 @@ def _normalize_candle(row):
 
 
 # ============================================================
-# GET KRAKEN OHLC
+# REQUEST KRAKEN
 # ============================================================
 
-def _request_kraken_ohlc(pair, since=None):
-    """
-    Gọi Kraken OHLC API.
-
-    since:
-        Unix timestamp.
-
-    Returns:
-        list candles
-    """
+def request_kraken(pair, since=None):
 
     params = {
         "pair": pair,
-        "interval": 60,
+        "interval": INTERVAL,
     }
 
     if since is not None:
@@ -102,7 +87,6 @@ def _request_kraken_ohlc(pair, since=None):
 
     for key, rows in result.items():
 
-        # Kraken trả thêm key "last"
         if key == "last":
             continue
 
@@ -110,12 +94,13 @@ def _request_kraken_ohlc(pair, since=None):
             continue
 
         for row in rows:
+
             if len(row) < 8:
                 continue
 
             try:
                 candles.append(
-                    _normalize_candle(row)
+                    normalize_candle(row)
                 )
             except Exception:
                 continue
@@ -128,43 +113,28 @@ def _request_kraken_ohlc(pair, since=None):
 # ============================================================
 
 def get_kraken_candles(symbol, limit=720):
-    """
-    Lấy số lượng nến lịch sử yêu cầu.
-
-    Ví dụ:
-
-        limit=720
-        limit=1440
-        limit=2160
-        limit=2880
-
-    Kraken có giới hạn dữ liệu mỗi request.
-    Vì vậy phải chia thành nhiều request.
-
-    Returns:
-        candles tăng dần theo timestamp.
-    """
 
     symbol = symbol.upper()
 
     if symbol not in PAIR_MAP:
         raise ValueError(
-            f"Symbol không được hỗ trợ: {symbol}. "
-            f"Chỉ hỗ trợ: {list(PAIR_MAP.keys())}"
+            f"Symbol không được hỗ trợ: {symbol}"
         )
 
     if limit <= 0:
-        raise ValueError("limit phải > 0")
+        raise ValueError(
+            "limit phải lớn hơn 0"
+        )
 
     pair = PAIR_MAP[symbol]
 
-    all_candles = {}
+    candles_by_time = {}
 
     # --------------------------------------------------------
-    # LẦN 1
+    # REQUEST 1
     # --------------------------------------------------------
 
-    batch = _request_kraken_ohlc(pair)
+    batch = request_kraken(pair)
 
     if not batch:
         raise RuntimeError(
@@ -172,80 +142,72 @@ def get_kraken_candles(symbol, limit=720):
         )
 
     for candle in batch:
-        all_candles[candle["time"]] = candle
+        candles_by_time[candle["time"]] = candle
 
     # --------------------------------------------------------
-    # Kraken OHLC có giới hạn dữ liệu.
-    #
-    # Dùng timestamp của candle cũ nhất hiện có
-    # để tiếp tục yêu cầu dữ liệu trước đó.
+    # PAGINATION
     # --------------------------------------------------------
 
-    oldest_time = min(all_candles.keys())
+    oldest_time = min(candles_by_time.keys())
 
-    # Số vòng tối đa để tránh loop vô hạn.
-    max_requests = max(
-        10,
-        (limit // KRAKEN_BATCH_LIMIT) + 10
-    )
+    max_requests = 30
 
-    request_count = 1
+    request_number = 1
 
-    while len(all_candles) < limit and request_count < max_requests:
+    while (
+        len(candles_by_time) < limit
+        and request_number < max_requests
+    ):
 
-        # Lùi lại trước candle cũ nhất.
-        #
-        # Trừ thêm 1 interval để tránh lấy lại
-        # đúng candle cũ nhất.
-        next_since = oldest_time - INTERVAL_SECONDS
+        # Lùi về trước dữ liệu hiện tại
+        since = oldest_time - (
+            INTERVAL_SECONDS * 720
+        )
 
-        try:
-            batch = _request_kraken_ohlc(
-                pair,
-                since=next_since,
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Lỗi lấy lịch sử Kraken "
-                f"{symbol}: {str(e)}"
-            )
+        batch = request_kraken(
+            pair,
+            since=since,
+        )
 
         if not batch:
             break
 
-        previous_count = len(all_candles)
+        old_count = len(candles_by_time)
+        old_oldest = oldest_time
 
         for candle in batch:
-            all_candles[candle["time"]] = candle
+            candles_by_time[
+                candle["time"]
+            ] = candle
 
-        # Tìm candle cũ nhất mới.
-        new_oldest_time = min(all_candles.keys())
+        oldest_time = min(
+            candles_by_time.keys()
+        )
 
-        # Nếu không tiến thêm được thì dừng.
+        new_count = len(candles_by_time)
+
+        # Không lấy thêm được dữ liệu
         if (
-            new_oldest_time >= oldest_time
-            and len(all_candles) == previous_count
+            new_count == old_count
+            and oldest_time == old_oldest
         ):
             break
 
-        oldest_time = new_oldest_time
+        request_number += 1
 
-        request_count += 1
-
-        # Tránh request quá nhanh.
-        time.sleep(0.2)
+        time.sleep(0.25)
 
     # --------------------------------------------------------
     # SORT
     # --------------------------------------------------------
 
     candles = sorted(
-        all_candles.values(),
+        candles_by_time.values(),
         key=lambda x: x["time"]
     )
 
     # --------------------------------------------------------
-    # LẤY ĐÚNG SỐ NẾN CUỐI
+    # CHỈ LẤY limit NẾN CUỐI
     # --------------------------------------------------------
 
     if len(candles) > limit:
@@ -255,7 +217,7 @@ def get_kraken_candles(symbol, limit=720):
 
 
 # ============================================================
-# RUN SINGLE SYMBOL BACKTEST
+# SINGLE SYMBOL BACKTEST
 # ============================================================
 
 def run_symbol_backtest(
@@ -264,18 +226,46 @@ def run_symbol_backtest(
     initial_balance=1000.0,
     fee_rate=0.0004,
     slippage=0.0001,
+    candle_count=None,
 ):
     """
     Backtest một symbol.
+
+    Hỗ trợ cả:
+
+        candles=1440
+
+    và:
+
+        candle_count=1440
+
+    để tương thích main.py cũ.
     """
+
+    # --------------------------------------------------------
+    # candle_count được ưu tiên nếu được truyền vào
+    # --------------------------------------------------------
+
+    if candle_count is not None:
+        candles = candle_count
 
     symbol = symbol.upper()
 
-    if candles not in [720, 1440, 2160, 2880]:
+    allowed = [
+        720,
+        1440,
+        2160,
+        2880,
+    ]
+
+    if candles not in allowed:
         raise ValueError(
-            "candles phải là một trong: "
-            "720, 1440, 2160, 2880"
+            f"candles phải là một trong: {allowed}"
         )
+
+    # --------------------------------------------------------
+    # GET DATA
+    # --------------------------------------------------------
 
     data = get_kraken_candles(
         symbol,
@@ -284,10 +274,19 @@ def run_symbol_backtest(
 
     actual_candles = len(data)
 
+    # --------------------------------------------------------
+    # KIỂM TRA DỮ LIỆU
+    # --------------------------------------------------------
+
     if actual_candles < 100:
         raise RuntimeError(
-            f"Dữ liệu quá ít: {actual_candles} candles"
+            f"Dữ liệu quá ít: "
+            f"{actual_candles} candles"
         )
+
+    # --------------------------------------------------------
+    # RUN BACKTEST
+    # --------------------------------------------------------
 
     result = run_backtest(
         data,
@@ -301,15 +300,18 @@ def run_symbol_backtest(
         "version": VERSION,
         "symbol": symbol,
         "timeframe": TIMEFRAME,
+
         "requested_candles": candles,
         "actual_candles": actual_candles,
+
         "source": "Kraken",
+
         "result": result,
     }
 
 
 # ============================================================
-# MULTI SYMBOL + MULTI PERIOD
+# MULTI SYMBOL
 # ============================================================
 
 def run_multi_backtest(
@@ -319,20 +321,6 @@ def run_multi_backtest(
     fee_rate=0.0004,
     slippage=0.0001,
 ):
-    """
-    Chạy:
-
-    BTCUSDT
-    ETHUSDT
-    SOLUSDT
-
-    với:
-
-    720
-    1440
-    2160
-    2880
-    """
 
     if symbols is None:
         symbols = [
@@ -359,12 +347,13 @@ def run_multi_backtest(
 
                 print(
                     f"[BACKTEST v{VERSION}] "
-                    f"{symbol} - {period} candles"
+                    f"{symbol} "
+                    f"{period} candles"
                 )
 
                 result = run_symbol_backtest(
                     symbol=symbol,
-                    candles=period,
+                    candle_count=period,
                     initial_balance=initial_balance,
                     fee_rate=fee_rate,
                     slippage=slippage,
@@ -401,29 +390,29 @@ def run_multi_backtest(
 # ============================================================
 
 def build_summary(results):
-    """
-    Tạo bảng summary ngắn gọn.
-    """
 
     summary = []
 
     for item in results:
 
         if item.get("status") != "ok":
+
             summary.append({
                 "symbol": item.get("symbol"),
-                "requested_candles": item.get(
-                    "requested_candles"
-                ),
-                "actual_candles": item.get(
-                    "actual_candles"
-                ),
+                "requested_candles":
+                    item.get("requested_candles"),
+                "actual_candles":
+                    item.get("actual_candles"),
                 "status": "ERROR",
                 "message": item.get("message"),
             })
+
             continue
 
-        result = item.get("result", {})
+        result = item.get(
+            "result",
+            {}
+        )
 
         account = result.get(
             "account",
@@ -456,7 +445,9 @@ def build_summary(results):
         )
 
         summary.append({
-            "symbol": item.get("symbol"),
+
+            "symbol":
+                item.get("symbol"),
 
             "requested_candles":
                 item.get("requested_candles"),
@@ -474,7 +465,9 @@ def build_summary(results):
                 account.get("total_profit"),
 
             "return_percent":
-                account.get("total_return_percent"),
+                account.get(
+                    "total_return_percent"
+                ),
 
             "trades":
                 trades.get("total"),
@@ -489,13 +482,17 @@ def build_summary(results):
                 trades.get("win_rate"),
 
             "profit_factor":
-                performance.get("profit_factor"),
+                performance.get(
+                    "profit_factor"
+                ),
 
             "max_drawdown":
                 risk.get("max_drawdown"),
 
             "max_drawdown_percent":
-                risk.get("max_drawdown_percent"),
+                risk.get(
+                    "max_drawdown_percent"
+                ),
 
             "buy_trades":
                 buy.get("trades"),
@@ -523,68 +520,82 @@ def build_summary(results):
 if __name__ == "__main__":
 
     print("=" * 70)
-    print("Binance AI Trading Pro")
-    print(f"Backtest v{VERSION}")
-    print("Strategy: Signal v1.6.1")
-    print("Source: Kraken")
+    print(
+        "Binance AI Trading Pro "
+        f"Backtest v{VERSION}"
+    )
+    print(
+        "Strategy: Signal v1.6.1"
+    )
+    print(
+        "Source: Kraken"
+    )
     print("=" * 70)
 
-    # Test riêng BTC 1440 trước.
     result = run_symbol_backtest(
         symbol="BTCUSDT",
-        candles=1440,
+        candle_count=1440,
         initial_balance=1000.0,
         fee_rate=0.0004,
         slippage=0.0001,
     )
 
     print()
-    print("RESULT")
+
+    print(
+        "Requested:",
+        result["requested_candles"]
+    )
+
+    print(
+        "Actual:",
+        result["actual_candles"]
+    )
+
+    print(
+        "Final balance:",
+        result["result"]["account"][
+            "final_balance"
+        ]
+    )
+
+    print(
+        "Profit:",
+        result["result"]["account"][
+            "total_profit"
+        ]
+    )
+
+    print(
+        "Return:",
+        result["result"]["account"][
+            "total_return_percent"
+        ]
+    )
+
+    print(
+        "Trades:",
+        result["result"]["trades"]["total"]
+    )
+
+    print(
+        "Win rate:",
+        result["result"]["trades"]["win_rate"]
+    )
+
+    print(
+        "Profit factor:",
+        result["result"]["performance"][
+            "profit_factor"
+        ]
+    )
+
+    print(
+        "Max DD:",
+        result["result"]["risk"][
+            "max_drawdown_percent"
+        ]
+    )
+
     print("=" * 70)
-
-    print(
-        f"Requested candles : "
-        f"{result['requested_candles']}"
-    )
-
-    print(
-        f"Actual candles    : "
-        f"{result['actual_candles']}"
-    )
-
-    print(
-        f"Final balance     : "
-        f"{result['result']['account']['final_balance']}"
-    )
-
-    print(
-        f"Total profit      : "
-        f"{result['result']['account']['total_profit']}"
-    )
-
-    print(
-        f"Return %          : "
-        f"{result['result']['account']['total_return_percent']}"
-    )
-
-    print(
-        f"Trades            : "
-        f"{result['result']['trades']['total']}"
-    )
-
-    print(
-        f"Win rate          : "
-        f"{result['result']['trades']['win_rate']}"
-    )
-
-    print(
-        f"Profit factor     : "
-        f"{result['result']['performance']['profit_factor']}"
-    )
-
-    print(
-        f"Max DD %          : "
-        f"{result['result']['risk']['max_drawdown_percent']}"
-    )
-
-    print("=" * 70)
+```
