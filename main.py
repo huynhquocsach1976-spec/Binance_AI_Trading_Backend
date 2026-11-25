@@ -5,7 +5,8 @@ import requests
 
 from ai_analyzer import analyze_market
 from backtest_engine import run_backtest
-from backtest_v12 import run_multi_backtest, build_summary
+from backtest_v12 import run_multi_backtest, build_summary, run_symbol_backtest
+from backtest_diagnostic import run_diagnostic
 
 
 # ============================================================
@@ -408,7 +409,6 @@ def backtest_all(
 
 # ============================================================
 # BACKTEST v1.2 - 1 SYMBOL
-# Cho phép test riêng một coin
 # ============================================================
 
 @app.get("/backtest-v12/{symbol}")
@@ -442,8 +442,6 @@ def backtest_v12_symbol(
 
     try:
 
-        from backtest_v12 import run_symbol_backtest
-
         result = run_symbol_backtest(
             symbol=symbol,
             candle_count=candles,
@@ -453,6 +451,103 @@ def backtest_v12_symbol(
         )
 
         return result
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "message": str(e)
+        }
+
+
+# ============================================================
+# BACKTEST DIAGNOSTIC v1.0
+# ============================================================
+
+@app.get("/backtest-diagnostic/{symbol}")
+def backtest_diagnostic(
+    symbol: str,
+    candles: int = 2880,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001
+):
+
+    symbol = symbol.upper()
+
+    allowed_periods = [
+        720,
+        1440,
+        2160,
+        2880
+    ]
+
+    if candles not in allowed_periods:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "message": (
+                "candles phải là một trong: "
+                "720, 1440, 2160, 2880"
+            )
+        }
+
+    try:
+
+        # ----------------------------------------------------
+        # Chạy lại Backtest v1.2
+        # ----------------------------------------------------
+
+        backtest_result = run_symbol_backtest(
+            symbol=symbol,
+            candle_count=candles,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage
+        )
+
+        if backtest_result.get("status") != "ok":
+
+            return backtest_result
+
+        # ----------------------------------------------------
+        # Lấy kết quả của backtest_engine
+        # ----------------------------------------------------
+
+        engine_result = backtest_result.get(
+            "result",
+            {}
+        )
+
+        # ----------------------------------------------------
+        # Diagnostic
+        # ----------------------------------------------------
+
+        diagnostic = run_diagnostic(
+            engine_result
+        )
+
+        # ----------------------------------------------------
+        # Return
+        # ----------------------------------------------------
+
+        return {
+            "status": "ok",
+            "version": "1.0.0",
+            "symbol": symbol,
+            "timeframe": "1h",
+            "candles": candles,
+            "actual_candles": backtest_result.get(
+                "actual_candles"
+            ),
+            "source": backtest_result.get(
+                "source"
+            ),
+            "strategy": "Signal v1.6.1",
+            "diagnostic": diagnostic
+        }
 
     except Exception as e:
 
