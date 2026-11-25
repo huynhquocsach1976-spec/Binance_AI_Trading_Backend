@@ -5,7 +5,7 @@ import numpy as np
 from ai_analyzer import analyze_market
 
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 STRATEGY = "Signal v1.6.1"
 
 
@@ -41,9 +41,6 @@ def safe_int(value, default=0):
 
 
 def native(value):
-    """
-    Convert numpy/pandas values to normal Python JSON-safe values.
-    """
 
     if isinstance(value, dict):
         return {
@@ -72,6 +69,7 @@ def native(value):
         return bool(value)
 
     if isinstance(value, float):
+
         if not math.isfinite(value):
             return None
 
@@ -83,18 +81,6 @@ def native(value):
 # =========================================================
 
 def normalize_data(data):
-    """
-    Convert historical candle data to DataFrame.
-
-    Required columns:
-        time
-        open
-        high
-        low
-        close
-        volume
-        trades
-    """
 
     if isinstance(data, pd.DataFrame):
 
@@ -116,9 +102,9 @@ def normalize_data(data):
             "Không có dữ liệu candle"
         )
 
-    # -----------------------------------------
-    # Rename common column names
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # Rename columns
+    # -----------------------------------------------------
 
     rename_map = {}
 
@@ -134,9 +120,9 @@ def normalize_data(data):
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    # -----------------------------------------
-    # Required columns
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # Required
+    # -----------------------------------------------------
 
     required = [
         "open",
@@ -154,9 +140,9 @@ def normalize_data(data):
                 f"Thiếu column: {col}"
             )
 
-    # -----------------------------------------
-    # Trades fallback
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # Trades
+    # -----------------------------------------------------
 
     if "trades" not in df.columns:
 
@@ -166,11 +152,14 @@ def normalize_data(data):
 
         else:
 
-            df["trades"] = 0
+            # Signal v1.6.1 có dùng trades ratio.
+            # Nếu dữ liệu không có trades thì tạo giá trị
+            # dương để không làm toàn bộ tín hiệu bị loại.
+            df["trades"] = 1.0
 
-    # -----------------------------------------
-    # Numeric conversion
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # Numeric
+    # -----------------------------------------------------
 
     numeric_cols = [
         "open",
@@ -210,7 +199,11 @@ def normalize_data(data):
 # SLIPPAGE
 # =========================================================
 
-def apply_entry_slippage(price, signal, slippage):
+def apply_entry_slippage(
+    price,
+    signal,
+    slippage
+):
 
     price = safe_float(price)
     slippage = safe_float(slippage)
@@ -226,7 +219,11 @@ def apply_entry_slippage(price, signal, slippage):
     return price
 
 
-def apply_exit_slippage(price, signal, slippage):
+def apply_exit_slippage(
+    price,
+    signal,
+    slippage
+):
 
     price = safe_float(price)
     slippage = safe_float(slippage)
@@ -331,15 +328,34 @@ def run_backtest(
     max_win_streak = 0
     max_loss_streak = 0
 
+    # =====================================================
+    # DEBUG COUNTERS
+    # =====================================================
+
+    signal_buy_count = 0
+    signal_sell_count = 0
+    signal_hold_count = 0
+
+    trade_allowed_false_count = 0
+    analyzer_error_count = 0
+
+    first_analyzer_error = None
+
+    # =====================================================
+    # START AFTER 100 CANDLES
+    # =====================================================
+
     i = 100
 
     while i < len(df) - 1:
 
-        # -------------------------------------------------
-        # Candles used for AI analysis
-        # -------------------------------------------------
+        analysis_df = df.iloc[
+            :i + 1
+        ].copy()
 
-        analysis_df = df.iloc[:i + 1].copy()
+        # -------------------------------------------------
+        # ANALYZE
+        # -------------------------------------------------
 
         try:
 
@@ -349,43 +365,112 @@ def run_backtest(
 
         except TypeError:
 
-            signal_result = analyze_market(
-                data=analysis_df
+            try:
+
+                signal_result = analyze_market(
+                    data=analysis_df
+                )
+
+            except Exception as e:
+
+                analyzer_error_count += 1
+
+                if first_analyzer_error is None:
+
+                    first_analyzer_error = (
+                        f"{type(e).__name__}: {str(e)}"
+                    )
+
+                i += 1
+                continue
+
+        except Exception as e:
+
+            analyzer_error_count += 1
+
+            if first_analyzer_error is None:
+
+                first_analyzer_error = (
+                    f"{type(e).__name__}: {str(e)}"
+                )
+
+            i += 1
+            continue
+
+        # -------------------------------------------------
+        # RESULT VALIDATION
+        # -------------------------------------------------
+
+        if not isinstance(
+            signal_result,
+            dict
+        ):
+
+            analyzer_error_count += 1
+
+            if first_analyzer_error is None:
+
+                first_analyzer_error = (
+                    "analyze_market không trả về dict"
+                )
+
+            i += 1
+            continue
+
+        signal = str(
+            signal_result.get(
+                "signal",
+                "HOLD"
             )
+        ).upper()
 
-        except Exception:
+        # -------------------------------------------------
+        # SIGNAL COUNTERS
+        # -------------------------------------------------
 
-            i += 1
-            continue
+        if signal == "BUY":
 
-        if not isinstance(signal_result, dict):
+            signal_buy_count += 1
 
-            i += 1
-            continue
+        elif signal == "SELL":
 
-        signal = signal_result.get(
-            "signal",
-            "HOLD"
-        )
+            signal_sell_count += 1
+
+        else:
+
+            signal_hold_count += 1
+
+        # -------------------------------------------------
+        # TRADE ALLOWED
+        # -------------------------------------------------
 
         trade_allowed = signal_result.get(
             "trade_allowed",
             signal in ["BUY", "SELL"]
         )
 
-        if signal not in ["BUY", "SELL"]:
+        trade_allowed = bool(
+            trade_allowed
+        )
+
+        if signal not in [
+            "BUY",
+            "SELL"
+        ]:
 
             i += 1
             continue
 
         if not trade_allowed:
 
+            trade_allowed_false_count += 1
+
             i += 1
             continue
 
-        # -------------------------------------------------
-        # Entry = next candle OPEN
-        # -------------------------------------------------
+        # =================================================
+        # ENTRY
+        # =================================================
 
         entry_index = i + 1
 
@@ -397,23 +482,32 @@ def run_backtest(
             entry_candle["open"]
         )
 
+        if raw_entry_price <= 0:
+
+            i += 1
+            continue
+
         entry_price = apply_entry_slippage(
             raw_entry_price,
             signal,
             slippage
         )
 
-        # -------------------------------------------------
-        # SL / TP from signal
-        # -------------------------------------------------
+        # =================================================
+        # SL / TP
+        # =================================================
 
         stop_loss = safe_float(
-            signal_result.get("stop_loss"),
+            signal_result.get(
+                "stop_loss"
+            ),
             0
         )
 
         take_profit = safe_float(
-            signal_result.get("take_profit"),
+            signal_result.get(
+                "take_profit"
+            ),
             0
         )
 
@@ -421,10 +515,15 @@ def run_backtest(
         # Fallback ATR
         # -------------------------------------------------
 
-        if stop_loss <= 0 or take_profit <= 0:
+        if (
+            stop_loss <= 0
+            or take_profit <= 0
+        ):
 
             atr = safe_float(
-                signal_result.get("atr"),
+                signal_result.get(
+                    "atr"
+                ),
                 0
             )
 
@@ -471,9 +570,9 @@ def run_backtest(
                     3.0 * atr
                 )
 
-        # -------------------------------------------------
-        # Search exit
-        # -------------------------------------------------
+        # =================================================
+        # SEARCH EXIT
+        # =================================================
 
         exit_index = None
         exit_price = None
@@ -497,16 +596,21 @@ def run_backtest(
                 candle["close"]
             )
 
-            # ---------------------------------------------
+            # -------------------------------------------------
             # BUY
-            # ---------------------------------------------
+            # -------------------------------------------------
 
             if signal == "BUY":
 
-                hit_sl = low <= stop_loss
-                hit_tp = high >= take_profit
+                hit_sl = (
+                    low <= stop_loss
+                )
 
-                # If both hit same candle:
+                hit_tp = (
+                    high >= take_profit
+                )
+
+                # Same candle:
                 # SL first
                 if hit_sl:
 
@@ -518,16 +622,21 @@ def run_backtest(
                     exit_price = take_profit
                     exit_reason = "TAKE_PROFIT"
 
-            # ---------------------------------------------
+            # -------------------------------------------------
             # SELL
-            # ---------------------------------------------
+            # -------------------------------------------------
 
             else:
 
-                hit_sl = high >= stop_loss
-                hit_tp = low <= take_profit
+                hit_sl = (
+                    high >= stop_loss
+                )
 
-                # If both hit same candle:
+                hit_tp = (
+                    low <= take_profit
+                )
+
+                # Same candle:
                 # SL first
                 if hit_sl:
 
@@ -542,13 +651,14 @@ def run_backtest(
             if exit_reason is not None:
 
                 exit_index = j
+
                 break
 
             j += 1
 
-        # -------------------------------------------------
-        # End of data
-        # -------------------------------------------------
+        # =================================================
+        # END OF DATA
+        # =================================================
 
         if exit_index is None:
 
@@ -560,9 +670,9 @@ def run_backtest(
 
             exit_reason = "END_OF_DATA"
 
-        # -------------------------------------------------
-        # Apply exit slippage
-        # -------------------------------------------------
+        # =================================================
+        # EXIT SLIPPAGE
+        # =================================================
 
         actual_exit_price = apply_exit_slippage(
             exit_price,
@@ -570,9 +680,9 @@ def run_backtest(
             slippage
         )
 
-        # -------------------------------------------------
-        # Return
-        # -------------------------------------------------
+        # =================================================
+        # RETURN
+        # =================================================
 
         trade_return = calculate_trade_return(
             signal,
@@ -580,19 +690,18 @@ def run_backtest(
             actual_exit_price
         )
 
-        # -------------------------------------------------
-        # Position = entire balance
-        # -------------------------------------------------
+        # =================================================
+        # POSITION = ENTIRE BALANCE
+        # =================================================
 
         profit_before_fee = (
             balance *
             trade_return
         )
 
-        # -------------------------------------------------
-        # Fees
-        # Entry + Exit
-        # -------------------------------------------------
+        # =================================================
+        # FEES
+        # =================================================
 
         entry_fee = (
             balance *
@@ -623,15 +732,17 @@ def run_backtest(
 
         total_fees += trade_fee
 
-        # -------------------------------------------------
-        # Statistics
-        # -------------------------------------------------
+        # =================================================
+        # STATISTICS
+        # =================================================
 
         if profit_after_fee > 0:
 
             wins += 1
 
-            gross_profit += profit_after_fee
+            gross_profit += (
+                profit_after_fee
+            )
 
             current_win_streak += 1
             current_loss_streak = 0
@@ -673,9 +784,9 @@ def run_backtest(
 
                 sell_wins += 1
 
-        # -------------------------------------------------
-        # Drawdown
-        # -------------------------------------------------
+        # =================================================
+        # DRAWDOWN
+        # =================================================
 
         if balance > max_balance:
 
@@ -691,6 +802,10 @@ def run_backtest(
             drawdown
         )
 
+        # =================================================
+        # EQUITY
+        # =================================================
+
         equity_curve.append(
             {
                 "trade": len(trades) + 1,
@@ -698,24 +813,38 @@ def run_backtest(
             }
         )
 
-        # -------------------------------------------------
-        # Trade record
-        # -------------------------------------------------
+        # =================================================
+        # TRADE RECORD
+        # =================================================
 
         trade = {
+
             "trade_id": len(trades) + 1,
+
             "signal": signal,
+
             "entry_index": entry_index,
+
             "exit_index": exit_index,
+
             "entry_price": entry_price,
+
             "exit_price": actual_exit_price,
+
             "stop_loss": stop_loss,
+
             "take_profit": take_profit,
+
             "reason": exit_reason,
+
             "return_pct": trade_return * 100,
+
             "profit_before_fee": profit_before_fee,
+
             "fees": trade_fee,
+
             "profit": profit_after_fee,
+
             "balance": balance
         }
 
@@ -723,9 +852,9 @@ def run_backtest(
             native(trade)
         )
 
-        # -------------------------------------------------
-        # Move after exit
-        # -------------------------------------------------
+        # =================================================
+        # MOVE AFTER EXIT
+        # =================================================
 
         i = exit_index + 1
 
@@ -736,31 +865,39 @@ def run_backtest(
     total_trades = len(trades)
 
     win_rate = (
-        wins / total_trades * 100
+        wins /
+        total_trades *
+        100
         if total_trades > 0
         else 0.0
     )
 
     buy_win_rate = (
-        buy_wins / buy_trades * 100
+        buy_wins /
+        buy_trades *
+        100
         if buy_trades > 0
         else 0.0
     )
 
     sell_win_rate = (
-        sell_wins / sell_trades * 100
+        sell_wins /
+        sell_trades *
+        100
         if sell_trades > 0
         else 0.0
     )
 
     average_win = (
-        gross_profit / wins
+        gross_profit /
+        wins
         if wins > 0
         else 0.0
     )
 
     average_loss = (
-        -gross_loss / losses
+        -gross_loss /
+        losses
         if losses > 0
         else 0.0
     )
@@ -808,6 +945,10 @@ def run_backtest(
         else 0
     )
 
+    # =====================================================
+    # RESULT
+    # =====================================================
+
     result = {
 
         "status": "ok",
@@ -817,6 +958,7 @@ def run_backtest(
         "strategy": STRATEGY,
 
         "data": {
+
             "candles": len(df)
         },
 
@@ -828,6 +970,35 @@ def run_backtest(
 
             "slippage": slippage
         },
+
+        # -------------------------------------------------
+        # DEBUG
+        # -------------------------------------------------
+
+        "debug": {
+
+            "signal_buy_count": signal_buy_count,
+
+            "signal_sell_count": signal_sell_count,
+
+            "signal_hold_count": signal_hold_count,
+
+            "trade_allowed_false_count": (
+                trade_allowed_false_count
+            ),
+
+            "analyzer_error_count": (
+                analyzer_error_count
+            ),
+
+            "first_analyzer_error": (
+                first_analyzer_error
+            )
+        },
+
+        # -------------------------------------------------
+        # SUMMARY
+        # -------------------------------------------------
 
         "summary": {
 
@@ -867,7 +1038,9 @@ def run_backtest(
 
             "gross_loss": gross_loss,
 
-            "profit_before_fees": profit_before_fees,
+            "profit_before_fees": (
+                profit_before_fees
+            ),
 
             "total_fees": total_fees,
 
@@ -901,8 +1074,7 @@ def run_backtest(
 if __name__ == "__main__":
 
     print(
-        "backtest_engine.py "
-        "VERSION:",
+        "backtest_engine.py VERSION:",
         VERSION
     )
 
