@@ -5,10 +5,6 @@ import numpy as np
 VERSION = "1.6.1"
 
 
-# =========================================================
-# EMA
-# =========================================================
-
 def calculate_ema(series, period):
     return series.ewm(
         span=period,
@@ -16,12 +12,7 @@ def calculate_ema(series, period):
     ).mean()
 
 
-# =========================================================
-# RSI
-# =========================================================
-
 def calculate_rsi(series, period=14):
-
     delta = series.diff()
 
     gain = delta.clip(lower=0)
@@ -30,37 +21,22 @@ def calculate_rsi(series, period=14):
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan
-    )
+    rs = avg_gain / avg_loss.replace(0, np.nan)
 
-    rsi = 100 - (
-        100 / (1 + rs)
-    )
+    rsi = 100 - (100 / (1 + rs))
 
     return rsi.fillna(50)
 
 
-# =========================================================
-# ATR
-# =========================================================
-
 def calculate_atr(df, period=14):
-
-    high_low = (
-        df["high"] -
-        df["low"]
-    )
+    high_low = df["high"] - df["low"]
 
     high_close = (
-        df["high"] -
-        df["close"].shift(1)
+        df["high"] - df["close"].shift(1)
     ).abs()
 
     low_close = (
-        df["low"] -
-        df["close"].shift(1)
+        df["low"] - df["close"].shift(1)
     ).abs()
 
     true_range = pd.concat(
@@ -72,74 +48,45 @@ def calculate_atr(df, period=14):
         axis=1
     ).max(axis=1)
 
-    return true_range.rolling(
-        period
-    ).mean()
+    return true_range.rolling(period).mean()
 
-
-# =========================================================
-# VWAP
-# =========================================================
 
 def calculate_vwap(df):
-
-    # Kraken đã cung cấp VWAP
     if "vwap" in df.columns:
-
         value = df["vwap"].iloc[-1]
 
         if pd.notna(value):
             return float(value)
 
-    # Nếu không có VWAP thì tự tính
     typical_price = (
         df["high"] +
         df["low"] +
         df["close"]
     ) / 3
 
-    cumulative_volume = (
-        df["volume"].cumsum()
-    )
+    cumulative_volume = df["volume"].cumsum()
 
     cumulative_price_volume = (
-        typical_price *
-        df["volume"]
+        typical_price * df["volume"]
     ).cumsum()
 
     vwap = (
         cumulative_price_volume /
-        cumulative_volume.replace(
-            0,
-            np.nan
-        )
+        cumulative_volume.replace(0, np.nan)
     )
 
-    return float(
-        vwap.iloc[-1]
-    )
+    return float(vwap.iloc[-1])
 
-
-# =========================================================
-# MAIN ANALYZER
-# =========================================================
 
 def analyze_market(candles):
 
-    # -----------------------------------------------------
-    # Kiểm tra dữ liệu
-    # -----------------------------------------------------
-
     if not candles or len(candles) < 50:
-
         return {
             "status": "error",
             "message": "Cần ít nhất 50 nến"
         }
 
-    df = pd.DataFrame(
-        candles
-    ).copy()
+    df = pd.DataFrame(candles).copy()
 
     required_columns = [
         "open",
@@ -152,7 +99,6 @@ def analyze_market(candles):
     for column in required_columns:
 
         if column not in df.columns:
-
             return {
                 "status": "error",
                 "message": f"Thiếu dữ liệu: {column}"
@@ -163,9 +109,7 @@ def analyze_market(candles):
             errors="coerce"
         )
 
-    # Trades có thể không có
     if "trades" not in df.columns:
-
         df["trades"] = 0
 
     df["trades"] = pd.to_numeric(
@@ -173,20 +117,17 @@ def analyze_market(candles):
         errors="coerce"
     ).fillna(0)
 
-    df = df.dropna().reset_index(
-        drop=True
-    )
+    df = df.dropna().reset_index(drop=True)
 
     if len(df) < 50:
-
         return {
             "status": "error",
             "message": "Sau khi làm sạch dữ liệu còn dưới 50 nến"
         }
 
-    # -----------------------------------------------------
+    # =========================
     # EMA
-    # -----------------------------------------------------
+    # =========================
 
     df["ema20"] = calculate_ema(
         df["close"],
@@ -198,27 +139,27 @@ def analyze_market(candles):
         50
     )
 
-    # -----------------------------------------------------
+    # =========================
     # RSI
-    # -----------------------------------------------------
+    # =========================
 
     df["rsi"] = calculate_rsi(
         df["close"],
         14
     )
 
-    # -----------------------------------------------------
+    # =========================
     # ATR
-    # -----------------------------------------------------
+    # =========================
 
     df["atr"] = calculate_atr(
         df,
         14
     )
 
-    # -----------------------------------------------------
+    # =========================
     # MACD
-    # -----------------------------------------------------
+    # =========================
 
     ema12 = calculate_ema(
         df["close"],
@@ -230,10 +171,7 @@ def analyze_market(candles):
         26
     )
 
-    df["macd"] = (
-        ema12 -
-        ema26
-    )
+    df["macd"] = ema12 - ema26
 
     df["macd_signal"] = calculate_ema(
         df["macd"],
@@ -245,17 +183,17 @@ def analyze_market(candles):
         df["macd_signal"]
     )
 
-    # -----------------------------------------------------
+    # =========================
     # VWAP
-    # -----------------------------------------------------
+    # =========================
 
     vwap = float(
         calculate_vwap(df)
     )
 
-    # -----------------------------------------------------
+    # =========================
     # Current candle
-    # -----------------------------------------------------
+    # =========================
 
     current_price = float(
         df["close"].iloc[-1]
@@ -273,9 +211,9 @@ def analyze_market(candles):
         df["trades"].iloc[-1]
     )
 
-    # -----------------------------------------------------
-    # Volume average
-    # -----------------------------------------------------
+    # =========================
+    # Volume
+    # =========================
 
     volume_avg20 = float(
         df["volume"]
@@ -285,19 +223,15 @@ def analyze_market(candles):
     )
 
     if volume_avg20 > 0:
-
         volume_ratio = float(
-            current_volume /
-            volume_avg20
+            current_volume / volume_avg20
         )
-
     else:
-
         volume_ratio = 0.0
 
-    # -----------------------------------------------------
-    # Trades average
-    # -----------------------------------------------------
+    # =========================
+    # Trades
+    # =========================
 
     trades_avg20 = float(
         df["trades"]
@@ -307,19 +241,15 @@ def analyze_market(candles):
     )
 
     if trades_avg20 > 0:
-
         trades_ratio = float(
-            current_trades /
-            trades_avg20
+            current_trades / trades_avg20
         )
-
     else:
-
         trades_ratio = 0.0
 
-    # -----------------------------------------------------
+    # =========================
     # Support / Resistance
-    # -----------------------------------------------------
+    # =========================
 
     recent = df.tail(30)
 
@@ -331,9 +261,9 @@ def analyze_market(candles):
         recent["high"].max()
     )
 
-    # -----------------------------------------------------
+    # =========================
     # Breakout / Breakdown
-    # -----------------------------------------------------
+    # =========================
 
     previous20 = df.iloc[-21:-1]
 
@@ -346,32 +276,28 @@ def analyze_market(candles):
     )
 
     breakout = bool(
-        current_price >
-        previous_high
+        current_price > previous_high
     )
 
     breakdown = bool(
-        current_price <
-        previous_low
+        current_price < previous_low
     )
 
-    # -----------------------------------------------------
+    # =========================
     # Candle direction
-    # -----------------------------------------------------
+    # =========================
 
     bullish_candle = bool(
-        current_price >
-        current_open
+        current_price > current_open
     )
 
     bearish_candle = bool(
-        current_price <
-        current_open
+        current_price < current_open
     )
 
-    # -----------------------------------------------------
-    # Indicator values
-    # -----------------------------------------------------
+    # =========================
+    # Indicators
+    # =========================
 
     ema20 = float(
         df["ema20"].iloc[-1]
@@ -401,9 +327,11 @@ def analyze_market(candles):
         df["macd_histogram"].iloc[-1]
     )
 
-    # Nếu ATR lỗi
-    if not np.isfinite(atr):
+    # =========================
+    # ATR fallback
+    # =========================
 
+    if not np.isfinite(atr):
         atr = float(
             (
                 df["high"] -
@@ -411,106 +339,75 @@ def analyze_market(candles):
             ).tail(14).mean()
         )
 
-    # -----------------------------------------------------
+    # =========================
     # SCORE
-    # -----------------------------------------------------
+    # =========================
 
     score = 0
 
     reasons = []
 
-    # =====================================================
-    # EMA TREND
-    # =====================================================
+    # EMA20 / EMA50
 
     if ema20 > ema50:
-
         score += 2
-
         reasons.append(
             "EMA20 nằm trên EMA50"
         )
-
     else:
-
         score -= 2
-
         reasons.append(
             "EMA20 nằm dưới EMA50"
         )
 
-    # =====================================================
-    # PRICE vs EMA20
-    # =====================================================
+    # Price / EMA20
 
     if current_price > ema20:
-
         score += 2
-
         reasons.append(
             "Giá nằm trên EMA20"
         )
-
     else:
-
         score -= 2
-
         reasons.append(
             "Giá nằm dưới EMA20"
         )
 
-    # =====================================================
     # RSI
-    # =====================================================
 
     if rsi >= 55:
-
         score += 2
-
         reasons.append(
             "RSI mạnh"
         )
 
     elif rsi >= 50:
-
         score += 1
-
         reasons.append(
             "RSI hơi tích cực"
         )
 
     elif rsi <= 35:
-
         score -= 2
-
         reasons.append(
             "RSI rất yếu"
         )
 
     else:
-
         score -= 1
-
         reasons.append(
             "RSI yếu"
         )
 
-    # =====================================================
     # MACD
-    # =====================================================
 
     if macd > macd_signal:
-
         score += 2
-
         reasons.append(
             "MACD tích cực"
         )
-
     else:
-
         score -= 2
-
         reasons.append(
             "MACD tiêu cực"
         )
@@ -518,51 +415,37 @@ def analyze_market(candles):
     # MACD Histogram
 
     if macd_histogram > 0:
-
         score += 1
-
     else:
-
         score -= 1
 
-    # =====================================================
     # VWAP
-    # =====================================================
 
     if current_price > vwap:
-
         score += 2
-
         reasons.append(
             "Giá nằm trên VWAP"
         )
-
     else:
-
         score -= 2
-
         reasons.append(
             "Giá nằm dưới VWAP"
         )
 
-    # =====================================================
-    # VOLUME CONFIRMATION
-    # =====================================================
+    # =========================
+    # Volume confirmation
+    # =========================
 
     if volume_ratio >= 1.5:
 
         if bullish_candle:
-
             score += 2
-
             reasons.append(
                 "Volume tăng mạnh xác nhận bên mua"
             )
 
         elif bearish_candle:
-
             score -= 2
-
             reasons.append(
                 "Volume tăng mạnh xác nhận bên bán"
             )
@@ -570,45 +453,36 @@ def analyze_market(candles):
     elif volume_ratio >= 1.2:
 
         if bullish_candle:
-
             score += 1
-
             reasons.append(
                 "Volume cao hơn trung bình"
             )
 
         elif bearish_candle:
-
             score -= 1
-
             reasons.append(
                 "Volume cao hơn trung bình"
             )
 
     else:
-
         reasons.append(
             "Volume thấp, chưa xác nhận xu hướng"
         )
 
-    # =====================================================
-    # TRADES CONFIRMATION
-    # =====================================================
+    # =========================
+    # Trades confirmation
+    # =========================
 
     if trades_ratio >= 1.5:
 
         if bullish_candle:
-
             score += 1
-
             reasons.append(
                 "Số lệnh tăng mạnh xác nhận bên mua"
             )
 
         elif bearish_candle:
-
             score -= 1
-
             reasons.append(
                 "Số lệnh tăng mạnh xác nhận bên bán"
             )
@@ -619,9 +493,9 @@ def analyze_market(candles):
             "Số lệnh thấp, thị trường thiếu xác nhận"
         )
 
-    # =====================================================
-    # BREAKOUT
-    # =====================================================
+    # =========================
+    # Breakout
+    # =========================
 
     if breakout:
 
@@ -631,9 +505,9 @@ def analyze_market(candles):
             "Breakout vượt đỉnh 20 nến"
         )
 
-    # =====================================================
-    # BREAKDOWN
-    # =====================================================
+    # =========================
+    # Breakdown
+    # =========================
 
     if breakdown:
 
@@ -643,49 +517,41 @@ def analyze_market(candles):
             "Breakdown thủng đáy 20 nến"
         )
 
-    # =====================================================
-    # MARKET CONDITION
-    # =====================================================
+    # =========================
+    # Market condition
+    # =========================
 
     if score >= 6:
-
         market_condition = "BULLISH"
 
     elif score <= -6:
-
         market_condition = "BEARISH"
 
     elif score > 0:
-
         market_condition = "WEAK_BULLISH"
 
     elif score < 0:
-
         market_condition = "WEAK_BEARISH"
 
     else:
-
         market_condition = "SIDEWAYS"
 
-    # =====================================================
-    # INITIAL SIGNAL
-    # =====================================================
+    # =========================
+    # Initial signal
+    # =========================
 
     if score >= 8:
-
         signal = "BUY"
 
     elif score <= -8:
-
         signal = "SELL"
 
     else:
-
         signal = "HOLD"
 
-    # =====================================================
-    # LIQUIDITY CONFIRMATION
-    # =====================================================
+    # =========================
+    # Liquidity confirmation
+    # =========================
 
     low_volume = bool(
         volume_ratio < 0.5
@@ -696,13 +562,12 @@ def analyze_market(candles):
     )
 
     confirmation_warning = bool(
-        low_volume or
-        low_trades
+        low_volume or low_trades
     )
 
-    # =====================================================
-    # FILTER BUY / SELL
-    # =====================================================
+    # =========================
+    # Filter signal
+    # =========================
 
     if signal in ["BUY", "SELL"]:
 
@@ -733,9 +598,9 @@ def analyze_market(candles):
                 "Trades quá thấp"
             )
 
-    # =====================================================
-    # CONFIDENCE
-    # =====================================================
+    # =========================
+    # Confidence
+    # =========================
 
     confidence = (
         abs(float(score)) /
@@ -747,18 +612,13 @@ def analyze_market(candles):
         95.0
     )
 
-    # Volume thấp
     if low_volume:
-
         confidence *= 0.75
 
-    # Trades thấp
     if low_trades:
-
         confidence *= 0.85
 
     if signal == "HOLD":
-
         confidence = max(
             50.0,
             confidence
@@ -769,9 +629,9 @@ def analyze_market(candles):
         2
     )
 
-    # =====================================================
-    # RISK MANAGEMENT
-    # =====================================================
+    # =========================
+    # Risk management
+    # =========================
 
     entry = float(
         current_price
@@ -784,13 +644,11 @@ def analyze_market(candles):
     if signal == "BUY":
 
         stop_loss = float(
-            entry -
-            (1.5 * atr)
+            entry - (1.5 * atr)
         )
 
         take_profit = float(
-            entry +
-            (3.0 * atr)
+            entry + (3.0 * atr)
         )
 
         risk_reward = 2.0
@@ -798,20 +656,18 @@ def analyze_market(candles):
     elif signal == "SELL":
 
         stop_loss = float(
-            entry +
-            (1.5 * atr)
+            entry + (1.5 * atr)
         )
 
         take_profit = float(
-            entry -
-            (3.0 * atr)
+            entry - (3.0 * atr)
         )
 
         risk_reward = 2.0
 
-    # =====================================================
-    # TRADE ALLOWED
-    # =====================================================
+    # =========================
+    # Trade allowed
+    # =========================
 
     trade_allowed = bool(
         signal in ["BUY", "SELL"]
@@ -819,9 +675,9 @@ def analyze_market(candles):
         and not low_trades
     )
 
-    # =====================================================
-    # CONFIRMATION REASON
-    # =====================================================
+    # =========================
+    # Confirmation reason
+    # =========================
 
     if trade_allowed:
 
@@ -868,19 +724,15 @@ def analyze_market(candles):
                 "Chưa có tín hiệu giao dịch đủ mạnh"
             )
 
-    # =====================================================
-    # FINAL JSON-SAFE RESULT
-    # =====================================================
+    # =========================
+    # JSON SAFE RESULT
+    # =========================
 
     return {
-
         "status": "ok",
-
         "version": VERSION,
 
-        "signal": str(
-            signal
-        ),
+        "signal": str(signal),
 
         "confidence": float(
             confidence
@@ -902,121 +754,71 @@ def analyze_market(candles):
             confirmation_reason
         ),
 
-        "price": float(
-            entry
-        ),
+        "price": float(entry),
 
-        "entry": float(
-            entry
-        ),
+        "entry": float(entry),
 
         "stop_loss": (
-            float(
-                round(
-                    stop_loss,
-                    2
-                )
-            )
+            float(round(stop_loss, 2))
             if stop_loss is not None
             else None
         ),
 
         "take_profit": (
-            float(
-                round(
-                    take_profit,
-                    2
-                )
-            )
+            float(round(take_profit, 2))
             if take_profit is not None
             else None
         ),
 
         "risk_reward": (
-            float(
-                risk_reward
-            )
+            float(risk_reward)
             if risk_reward is not None
             else None
         ),
 
         "indicators": {
-
             "ema20": float(
-                round(
-                    ema20,
-                    2
-                )
+                round(ema20, 2)
             ),
 
             "ema50": float(
-                round(
-                    ema50,
-                    2
-                )
+                round(ema50, 2)
             ),
 
             "rsi": float(
-                round(
-                    rsi,
-                    2
-                )
+                round(rsi, 2)
             ),
 
             "atr": float(
-                round(
-                    atr,
-                    2
-                )
+                round(atr, 2)
             ),
 
             "macd": float(
-                round(
-                    macd,
-                    4
-                )
+                round(macd, 4)
             ),
 
             "macd_signal": float(
-                round(
-                    macd_signal,
-                    4
-                )
+                round(macd_signal, 4)
             ),
 
             "macd_histogram": float(
-                round(
-                    macd_histogram,
-                    4
-                )
+                round(macd_histogram, 4)
             ),
 
             "vwap": float(
-                round(
-                    vwap,
-                    2
-                )
+                round(vwap, 2)
             ),
 
             "volume": float(
-                round(
-                    current_volume,
-                    6
-                )
+                round(current_volume, 6)
             ),
 
             "volume_avg20": float(
-                round(
-                    volume_avg20,
-                    6
-                )
+                round(volume_avg20, 6)
             ),
 
             "volume_ratio": float(
-                round(
-                    volume_ratio,
-                    2
-                )
+                round(volume_ratio, 2)
             ),
 
             "trades": int(
@@ -1024,32 +826,20 @@ def analyze_market(candles):
             ),
 
             "trades_avg20": float(
-                round(
-                    trades_avg20,
-                    2
-                )
+                round(trades_avg20, 2)
             ),
 
             "trades_ratio": float(
-                round(
-                    trades_ratio,
-                    2
-                )
+                round(trades_ratio, 2)
             )
         },
 
         "support": float(
-            round(
-                support,
-                2
-            )
+            round(support, 2)
         ),
 
         "resistance": float(
-            round(
-                resistance,
-                2
-            )
+            round(resistance, 2)
         ),
 
         "breakout": bool(
@@ -1073,4 +863,3 @@ def analyze_market(candles):
             len(df)
         )
     }
-```
