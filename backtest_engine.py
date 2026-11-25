@@ -1,757 +1,295 @@
-import os
-import csv
-import requests
+import math
+import pandas as pd
+import numpy as np
 
-VERSION = "1.2.3"
-TIMEFRAME = "1h"
-
-PAIR_MAP = {
-    "BTCUSDT": "XBTUSD",
-    "ETHUSDT": "ETHUSD",
-    "SOLUSDT": "SOLUSD",
-}
-
-ALLOWED_CANDLES = {
-    720,
-    1440,
-    2160,
-    2880,
-}
-
-KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
-
-HISTORICAL_DIR = os.getenv(
-    "KRAKEN_HISTORICAL_DIR",
-    os.path.join(
-        os.path.dirname(__file__),
-        "historical"
-    )
-)
+from ai_analyzer import analyze_market
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+VERSION = "1.1.1"
+STRATEGY = "Signal v1.6.1"
+
+
+# =========================================================
+# SAFE CONVERSION
+# =========================================================
 
 def safe_float(value, default=0.0):
     try:
-        return float(value)
+        if value is None:
+            return float(default)
+
+        value = float(value)
+
+        if not math.isfinite(value):
+            return float(default)
+
+        return value
+
     except Exception:
-        return default
+        return float(default)
 
 
 def safe_int(value, default=0):
     try:
-        return int(float(value))
+        if value is None:
+            return int(default)
+
+        return int(value)
+
     except Exception:
-        return default
+        return int(default)
 
 
-def normalize_symbol(symbol):
-    return str(symbol).upper().replace("/", "").replace("-", "")
+def native(value):
+    """
+    Convert numpy/pandas values to normal Python JSON-safe values.
+    """
+
+    if isinstance(value, dict):
+        return {
+            str(k): native(v)
+            for k, v in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [
+            native(v)
+            for v in value
+        ]
+
+    if isinstance(value, (np.integer,)):
+        return int(value)
+
+    if isinstance(value, (np.floating,)):
+        value = float(value)
+
+        if not math.isfinite(value):
+            return None
+
+        return value
+
+    if isinstance(value, np.bool_):
+        return bool(value)
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+
+    return value
 
 
-def get_pair(symbol):
-    symbol = normalize_symbol(symbol)
-
-    if symbol not in PAIR_MAP:
-        raise ValueError(
-            f"Symbol không được hỗ trợ: {symbol}"
-        )
-
-    return PAIR_MAP[symbol]
-
-
-def validate_candle_count(candles):
-    candles = safe_int(candles, 720)
-
-    if candles not in ALLOWED_CANDLES:
-        raise ValueError(
-            "candles phải là một trong: "
-            "720, 1440, 2160, 2880"
-        )
-
-    return candles
-
-
-# ============================================================
-# VWAP
-# ============================================================
-
-def calculate_vwap(rows):
-    cumulative_pv = 0.0
-    cumulative_volume = 0.0
-
-    result = []
-
-    for row in rows:
-
-        high = safe_float(row["high"])
-        low = safe_float(row["low"])
-        close = safe_float(row["close"])
-        volume = safe_float(row["volume"])
-
-        typical_price = (
-            high + low + close
-        ) / 3.0
-
-        cumulative_pv += (
-            typical_price * volume
-        )
-
-        cumulative_volume += volume
-
-        if cumulative_volume > 0:
-            vwap = (
-                cumulative_pv /
-                cumulative_volume
-            )
-        else:
-            vwap = close
-
-        item = dict(row)
-
-        item["vwap"] = vwap
-
-        result.append(item)
-
-    return result
-
-
-# ============================================================
+# =========================================================
 # NORMALIZE DATA
-# ============================================================
+# =========================================================
 
-def normalize_rows(rows):
+def normalize_data(data):
+    """
+    Convert historical candle data to DataFrame.
 
-    result = []
+    Required columns:
+        time
+        open
+        high
+        low
+        close
+        volume
+        trades
+    """
 
-    for row in rows:
+    if isinstance(data, pd.DataFrame):
 
-        try:
+        df = data.copy()
 
-            timestamp = safe_int(
-                row["time"]
-            )
+    elif isinstance(data, list):
 
-            if timestamp <= 0:
-                continue
+        df = pd.DataFrame(data)
 
-            open_price = safe_float(
-                row["open"]
-            )
+    else:
 
-            high_price = safe_float(
-                row["high"]
-            )
+        raise ValueError(
+            "data phải là DataFrame hoặc list candles"
+        )
 
-            low_price = safe_float(
-                row["low"]
-            )
+    if df.empty:
 
-            close_price = safe_float(
-                row["close"]
-            )
+        raise ValueError(
+            "Không có dữ liệu candle"
+        )
 
-            volume = safe_float(
-                row.get("volume", 0)
-            )
+    # -----------------------------------------
+    # Rename common column names
+    # -----------------------------------------
 
-            trades = safe_int(
-                row.get("trades", 0)
-            )
+    rename_map = {}
 
-            if (
-                open_price <= 0
-                or high_price <= 0
-                or low_price <= 0
-                or close_price <= 0
-            ):
-                continue
+    if "timestamp" in df.columns and "time" not in df.columns:
+        rename_map["timestamp"] = "time"
 
-            result.append(
-                {
-                    "time": timestamp,
-                    "open": open_price,
-                    "high": high_price,
-                    "low": low_price,
-                    "close": close_price,
-                    "volume": volume,
-                    "trades": trades,
-                }
-            )
+    if "date" in df.columns and "time" not in df.columns:
+        rename_map["date"] = "time"
 
-        except Exception:
-            continue
+    if "Timestamp" in df.columns and "time" not in df.columns:
+        rename_map["Timestamp"] = "time"
 
-    # Sort
-    result.sort(
-        key=lambda x: x["time"]
-    )
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
-    # Remove duplicate timestamp
-    unique = {}
+    # -----------------------------------------
+    # Required columns
+    # -----------------------------------------
 
-    for row in result:
-        unique[row["time"]] = row
-
-    result = list(
-        unique.values()
-    )
-
-    result.sort(
-        key=lambda x: x["time"]
-    )
-
-    return calculate_vwap(result)
-
-
-# ============================================================
-# LOCAL HISTORICAL CSV
-# ============================================================
-
-def find_local_csv(symbol):
-
-    pair = get_pair(symbol)
-
-    filename = f"{pair}_60.csv"
-
-    candidates = [
-        os.path.join(
-            HISTORICAL_DIR,
-            filename
-        ),
-
-        os.path.join(
-            os.getcwd(),
-            "historical",
-            filename
-        ),
-
-        os.path.join(
-            os.getcwd(),
-            filename
-        ),
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
     ]
 
-    for path in candidates:
+    for col in required:
 
-        if os.path.isfile(path):
-            return path
+        if col not in df.columns:
 
-    return None
+            raise ValueError(
+                f"Thiếu column: {col}"
+            )
 
+    # -----------------------------------------
+    # Trades fallback
+    # -----------------------------------------
 
-def load_local_csv(
-    symbol,
-    candle_count
-):
+    if "trades" not in df.columns:
 
-    path = find_local_csv(symbol)
+        if "count" in df.columns:
 
-    if not path:
-        return None
+            df["trades"] = df["count"]
 
-    rows = []
+        else:
 
-    try:
+            df["trades"] = 0
 
-        with open(
-            path,
-            "r",
-            encoding="utf-8",
-            errors="ignore"
-        ) as file:
+    # -----------------------------------------
+    # Numeric conversion
+    # -----------------------------------------
 
-            reader = csv.reader(file)
-
-            for values in reader:
-
-                if not values:
-                    continue
-
-                if len(values) < 7:
-                    continue
-
-                try:
-
-                    timestamp = int(
-                        float(values[0])
-                    )
-
-                except Exception:
-
-                    continue
-
-                rows.append(
-                    {
-                        "time": timestamp,
-                        "open": safe_float(
-                            values[1]
-                        ),
-                        "high": safe_float(
-                            values[2]
-                        ),
-                        "low": safe_float(
-                            values[3]
-                        ),
-                        "close": safe_float(
-                            values[4]
-                        ),
-                        "volume": safe_float(
-                            values[5]
-                        ),
-                        "trades": safe_int(
-                            values[6]
-                        ),
-                    }
-                )
-
-        rows = normalize_rows(rows)
-
-        if len(rows) < candle_count:
-
-            return {
-                "status": "insufficient",
-                "rows": rows,
-                "available": len(rows),
-                "path": path,
-            }
-
-        return {
-            "status": "ok",
-            "rows": rows[-candle_count:],
-            "available": len(rows),
-            "path": path,
-        }
-
-    except Exception as exc:
-
-        return {
-            "status": "error",
-            "rows": [],
-            "available": 0,
-            "path": path,
-            "message": str(exc),
-        }
-
-
-# ============================================================
-# KRAKEN REST OHLC
-# ============================================================
-
-def fetch_kraken_ohlc(
-    symbol,
-    candle_count
-):
-
-    pair = get_pair(symbol)
-
-    response = requests.get(
-        KRAKEN_OHLC_URL,
-        params={
-            "pair": pair,
-            "interval": 60,
-        },
-        timeout=30
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if data.get("error"):
-        raise RuntimeError(
-            f"Kraken API error: {data['error']}"
-        )
-
-    result = data.get(
-        "result",
-        {}
-    )
-
-    pair_key = None
-
-    for key in result:
-
-        if key != "last":
-            pair_key = key
-            break
-
-    if not pair_key:
-
-        raise RuntimeError(
-            "Không tìm thấy dữ liệu OHLC."
-        )
-
-    raw_rows = result[pair_key]
-
-    rows = []
-
-    for item in raw_rows:
-
-        if len(item) < 8:
-            continue
-
-        rows.append(
-            {
-                "time": safe_int(
-                    item[0]
-                ),
-                "open": safe_float(
-                    item[1]
-                ),
-                "high": safe_float(
-                    item[2]
-                ),
-                "low": safe_float(
-                    item[3]
-                ),
-                "close": safe_float(
-                    item[4]
-                ),
-                "vwap": safe_float(
-                    item[5]
-                ),
-                "volume": safe_float(
-                    item[6]
-                ),
-                "trades": safe_int(
-                    item[7]
-                ),
-            }
-        )
-
-    rows.sort(
-        key=lambda x: x["time"]
-    )
-
-    rows = rows[
-        -min(
-            candle_count,
-            len(rows)
-        ):
+    numeric_cols = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trades"
     ]
 
-    return rows
+    for col in numeric_cols:
 
-
-# ============================================================
-# GET HISTORICAL CANDLES
-# ============================================================
-
-def get_historical_candles(
-    symbol,
-    candle_count
-):
-
-    symbol = normalize_symbol(
-        symbol
-    )
-
-    candle_count = validate_candle_count(
-        candle_count
-    )
-
-    # --------------------------------------------------------
-    # LOCAL CSV
-    # --------------------------------------------------------
-
-    local = load_local_csv(
-        symbol,
-        candle_count
-    )
-
-    if local:
-
-        if local["status"] == "ok":
-
-            rows = local["rows"]
-
-            return {
-                "status": "ok",
-                "source": "Kraken OHLCVT CSV",
-                "symbol": symbol,
-                "pair": get_pair(symbol),
-                "requested_candles": candle_count,
-                "actual_candles": len(rows),
-                "rows": rows,
-                "data_path": local["path"],
-            }
-
-        if local["status"] == "insufficient":
-
-            if candle_count > 720:
-
-                return {
-                    "status": "error",
-                    "source": "Kraken OHLCVT CSV",
-                    "symbol": symbol,
-                    "pair": get_pair(symbol),
-                    "requested_candles": candle_count,
-                    "actual_candles": local["available"],
-                    "message": (
-                        "File OHLCVT không đủ dữ liệu."
-                    ),
-                }
-
-    # --------------------------------------------------------
-    # KRAKEN REST
-    # --------------------------------------------------------
-
-    if candle_count <= 720:
-
-        rows = fetch_kraken_ohlc(
-            symbol,
-            candle_count
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
         )
 
-        return {
-            "status": "ok",
-            "source": "Kraken",
-            "symbol": symbol,
-            "pair": get_pair(symbol),
-            "requested_candles": candle_count,
-            "actual_candles": len(rows),
-            "rows": rows,
-        }
+    df = df.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close"
+        ]
+    ).reset_index(drop=True)
 
-    # --------------------------------------------------------
-    # >720 WITHOUT CSV
-    # --------------------------------------------------------
+    if len(df) < 100:
 
-    return {
-        "status": "error",
-        "source": "Kraken",
-        "symbol": symbol,
-        "pair": get_pair(symbol),
-        "requested_candles": candle_count,
-        "actual_candles": 0,
-        "message": (
-            "Kraken REST OHLC chỉ cung cấp tối đa "
-            "720 candles. Cần dữ liệu OHLCVT lịch sử "
-            f"{get_pair(symbol)}_60.csv để chạy "
-            f"{candle_count} candles."
-        ),
-    }
+        raise ValueError(
+            f"Không đủ dữ liệu để backtest: {len(df)} candles"
+        )
+
+    return df
 
 
-# ============================================================
-# SUMMARY
-# ============================================================
+# =========================================================
+# SLIPPAGE
+# =========================================================
 
-def build_summary(result):
+def apply_entry_slippage(price, signal, slippage):
 
-    if not isinstance(result, dict):
+    price = safe_float(price)
+    slippage = safe_float(slippage)
 
-        return {
-            "status": "error",
-            "message": "Backtest result không hợp lệ."
-        }
+    if signal == "BUY":
 
-    account = result.get(
-        "account",
-        {}
-    )
+        return price * (1.0 + slippage)
 
-    trades = result.get(
-        "trades",
-        {}
-    )
+    if signal == "SELL":
 
-    buy = result.get(
-        "buy",
-        {}
-    )
+        return price * (1.0 - slippage)
 
-    sell = result.get(
-        "sell",
-        {}
-    )
-
-    performance = result.get(
-        "performance",
-        {}
-    )
-
-    risk = result.get(
-        "risk",
-        {}
-    )
-
-    return {
-
-        "account": {
-            "initial_balance": account.get(
-                "initial_balance",
-                0
-            ),
-            "final_balance": account.get(
-                "final_balance",
-                0
-            ),
-            "total_profit": account.get(
-                "total_profit",
-                0
-            ),
-            "total_return_percent": account.get(
-                "total_return_percent",
-                0
-            ),
-        },
-
-        "trades": {
-            "total": trades.get(
-                "total",
-                0
-            ),
-            "wins": trades.get(
-                "wins",
-                0
-            ),
-            "losses": trades.get(
-                "losses",
-                0
-            ),
-            "win_rate": trades.get(
-                "win_rate",
-                0
-            ),
-        },
-
-        "buy": {
-            "trades": buy.get(
-                "trades",
-                0
-            ),
-            "wins": buy.get(
-                "wins",
-                0
-            ),
-            "losses": buy.get(
-                "losses",
-                0
-            ),
-            "win_rate": buy.get(
-                "win_rate",
-                0
-            ),
-        },
-
-        "sell": {
-            "trades": sell.get(
-                "trades",
-                0
-            ),
-            "wins": sell.get(
-                "wins",
-                0
-            ),
-            "losses": sell.get(
-                "losses",
-                0
-            ),
-            "win_rate": sell.get(
-                "win_rate",
-                0
-            ),
-        },
-
-        "performance": {
-            "average_win": performance.get(
-                "average_win",
-                0
-            ),
-            "average_loss": performance.get(
-                "average_loss",
-                0
-            ),
-            "profit_factor": performance.get(
-                "profit_factor",
-                0
-            ),
-            "gross_profit": performance.get(
-                "gross_profit",
-                0
-            ),
-            "gross_loss": performance.get(
-                "gross_loss",
-                0
-            ),
-            "profit_before_fees": performance.get(
-                "profit_before_fees",
-                0
-            ),
-            "total_fees": performance.get(
-                "total_fees",
-                0
-            ),
-        },
-
-        "risk": {
-            "max_drawdown": risk.get(
-                "max_drawdown",
-                0
-            ),
-            "max_drawdown_percent": risk.get(
-                "max_drawdown_percent",
-                0
-            ),
-            "max_win_streak": risk.get(
-                "max_win_streak",
-                0
-            ),
-            "max_loss_streak": risk.get(
-                "max_loss_streak",
-                0
-            ),
-        },
-
-        "settings": result.get(
-            "settings",
-            {}
-        ),
-
-        "equity_curve": result.get(
-            "equity_curve",
-            []
-        ),
-
-        "trade_history": result.get(
-            "trade_history",
-            []
-        ),
-    }
+    return price
 
 
-# ============================================================
-# SINGLE SYMBOL BACKTEST
-# ============================================================
+def apply_exit_slippage(price, signal, slippage):
 
-def run_symbol_backtest(
-    symbol,
-    candle_count=720,
-    candles=None,
-    initial_balance=1000,
+    price = safe_float(price)
+    slippage = safe_float(slippage)
+
+    if signal == "BUY":
+
+        return price * (1.0 - slippage)
+
+    if signal == "SELL":
+
+        return price * (1.0 + slippage)
+
+    return price
+
+
+# =========================================================
+# TRADE RETURN
+# =========================================================
+
+def calculate_trade_return(
+    signal,
+    entry_price,
+    exit_price
+):
+
+    entry_price = safe_float(entry_price)
+    exit_price = safe_float(exit_price)
+
+    if entry_price <= 0:
+
+        return 0.0
+
+    if signal == "BUY":
+
+        return (
+            exit_price - entry_price
+        ) / entry_price
+
+    if signal == "SELL":
+
+        return (
+            entry_price - exit_price
+        ) / entry_price
+
+    return 0.0
+
+
+# =========================================================
+# BACKTEST ENGINE
+# =========================================================
+
+def run_backtest(
+    data,
+    initial_balance=1000.0,
     fee_rate=0.0004,
-    slippage=0.0001,
+    slippage=0.0001
 ):
 
-    symbol = normalize_symbol(
-        symbol
-    )
-
-    # Cho phép main.py dùng candles=
-    if candles is not None:
-        candle_count = candles
-
-    candle_count = validate_candle_count(
-        candle_count
-    )
+    df = normalize_data(data)
 
     initial_balance = safe_float(
         initial_balance,
-        1000
+        1000.0
     )
 
     fee_rate = safe_float(
@@ -764,296 +302,615 @@ def run_symbol_backtest(
         0.0001
     )
 
-    if initial_balance <= 0:
+    balance = initial_balance
 
-        return {
-            "status": "error",
-            "version": VERSION,
-            "symbol": symbol,
-            "message": (
-                "initial_balance phải > 0"
-            ),
+    trades = []
+
+    equity_curve = []
+
+    wins = 0
+    losses = 0
+
+    buy_trades = 0
+    buy_wins = 0
+
+    sell_trades = 0
+    sell_wins = 0
+
+    gross_profit = 0.0
+    gross_loss = 0.0
+
+    total_fees = 0.0
+
+    max_balance = initial_balance
+    max_drawdown = 0.0
+
+    current_win_streak = 0
+    current_loss_streak = 0
+
+    max_win_streak = 0
+    max_loss_streak = 0
+
+    i = 100
+
+    while i < len(df) - 1:
+
+        # -------------------------------------------------
+        # Candles used for AI analysis
+        # -------------------------------------------------
+
+        analysis_df = df.iloc[:i + 1].copy()
+
+        try:
+
+            signal_result = analyze_market(
+                analysis_df
+            )
+
+        except TypeError:
+
+            signal_result = analyze_market(
+                data=analysis_df
+            )
+
+        except Exception:
+
+            i += 1
+            continue
+
+        if not isinstance(signal_result, dict):
+
+            i += 1
+            continue
+
+        signal = signal_result.get(
+            "signal",
+            "HOLD"
+        )
+
+        trade_allowed = signal_result.get(
+            "trade_allowed",
+            signal in ["BUY", "SELL"]
+        )
+
+        if signal not in ["BUY", "SELL"]:
+
+            i += 1
+            continue
+
+        if not trade_allowed:
+
+            i += 1
+            continue
+
+        # -------------------------------------------------
+        # Entry = next candle OPEN
+        # -------------------------------------------------
+
+        entry_index = i + 1
+
+        entry_candle = df.iloc[
+            entry_index
+        ]
+
+        raw_entry_price = safe_float(
+            entry_candle["open"]
+        )
+
+        entry_price = apply_entry_slippage(
+            raw_entry_price,
+            signal,
+            slippage
+        )
+
+        # -------------------------------------------------
+        # SL / TP from signal
+        # -------------------------------------------------
+
+        stop_loss = safe_float(
+            signal_result.get("stop_loss"),
+            0
+        )
+
+        take_profit = safe_float(
+            signal_result.get("take_profit"),
+            0
+        )
+
+        # -------------------------------------------------
+        # Fallback ATR
+        # -------------------------------------------------
+
+        if stop_loss <= 0 or take_profit <= 0:
+
+            atr = safe_float(
+                signal_result.get("atr"),
+                0
+            )
+
+            if atr <= 0:
+
+                high_low = (
+                    df["high"] -
+                    df["low"]
+                )
+
+                atr = safe_float(
+                    high_low.iloc[
+                        max(0, i - 13):i + 1
+                    ].mean(),
+                    0
+                )
+
+            if atr <= 0:
+
+                i += 1
+                continue
+
+            if signal == "BUY":
+
+                stop_loss = (
+                    entry_price -
+                    1.5 * atr
+                )
+
+                take_profit = (
+                    entry_price +
+                    3.0 * atr
+                )
+
+            else:
+
+                stop_loss = (
+                    entry_price +
+                    1.5 * atr
+                )
+
+                take_profit = (
+                    entry_price -
+                    3.0 * atr
+                )
+
+        # -------------------------------------------------
+        # Search exit
+        # -------------------------------------------------
+
+        exit_index = None
+        exit_price = None
+        exit_reason = None
+
+        j = entry_index
+
+        while j < len(df):
+
+            candle = df.iloc[j]
+
+            high = safe_float(
+                candle["high"]
+            )
+
+            low = safe_float(
+                candle["low"]
+            )
+
+            close = safe_float(
+                candle["close"]
+            )
+
+            # ---------------------------------------------
+            # BUY
+            # ---------------------------------------------
+
+            if signal == "BUY":
+
+                hit_sl = low <= stop_loss
+                hit_tp = high >= take_profit
+
+                # If both hit same candle:
+                # SL first
+                if hit_sl:
+
+                    exit_price = stop_loss
+                    exit_reason = "STOP_LOSS"
+
+                elif hit_tp:
+
+                    exit_price = take_profit
+                    exit_reason = "TAKE_PROFIT"
+
+            # ---------------------------------------------
+            # SELL
+            # ---------------------------------------------
+
+            else:
+
+                hit_sl = high >= stop_loss
+                hit_tp = low <= take_profit
+
+                # If both hit same candle:
+                # SL first
+                if hit_sl:
+
+                    exit_price = stop_loss
+                    exit_reason = "STOP_LOSS"
+
+                elif hit_tp:
+
+                    exit_price = take_profit
+                    exit_reason = "TAKE_PROFIT"
+
+            if exit_reason is not None:
+
+                exit_index = j
+                break
+
+            j += 1
+
+        # -------------------------------------------------
+        # End of data
+        # -------------------------------------------------
+
+        if exit_index is None:
+
+            exit_index = len(df) - 1
+
+            exit_price = safe_float(
+                df.iloc[-1]["close"]
+            )
+
+            exit_reason = "END_OF_DATA"
+
+        # -------------------------------------------------
+        # Apply exit slippage
+        # -------------------------------------------------
+
+        actual_exit_price = apply_exit_slippage(
+            exit_price,
+            signal,
+            slippage
+        )
+
+        # -------------------------------------------------
+        # Return
+        # -------------------------------------------------
+
+        trade_return = calculate_trade_return(
+            signal,
+            entry_price,
+            actual_exit_price
+        )
+
+        # -------------------------------------------------
+        # Position = entire balance
+        # -------------------------------------------------
+
+        profit_before_fee = (
+            balance *
+            trade_return
+        )
+
+        # -------------------------------------------------
+        # Fees
+        # Entry + Exit
+        # -------------------------------------------------
+
+        entry_fee = (
+            balance *
+            fee_rate
+        )
+
+        exit_balance_before_fee = (
+            balance +
+            profit_before_fee
+        )
+
+        exit_fee = (
+            exit_balance_before_fee *
+            fee_rate
+        )
+
+        trade_fee = (
+            entry_fee +
+            exit_fee
+        )
+
+        profit_after_fee = (
+            profit_before_fee -
+            trade_fee
+        )
+
+        balance += profit_after_fee
+
+        total_fees += trade_fee
+
+        # -------------------------------------------------
+        # Statistics
+        # -------------------------------------------------
+
+        if profit_after_fee > 0:
+
+            wins += 1
+
+            gross_profit += profit_after_fee
+
+            current_win_streak += 1
+            current_loss_streak = 0
+
+            max_win_streak = max(
+                max_win_streak,
+                current_win_streak
+            )
+
+        else:
+
+            losses += 1
+
+            gross_loss += abs(
+                profit_after_fee
+            )
+
+            current_loss_streak += 1
+            current_win_streak = 0
+
+            max_loss_streak = max(
+                max_loss_streak,
+                current_loss_streak
+            )
+
+        if signal == "BUY":
+
+            buy_trades += 1
+
+            if profit_after_fee > 0:
+
+                buy_wins += 1
+
+        elif signal == "SELL":
+
+            sell_trades += 1
+
+            if profit_after_fee > 0:
+
+                sell_wins += 1
+
+        # -------------------------------------------------
+        # Drawdown
+        # -------------------------------------------------
+
+        if balance > max_balance:
+
+            max_balance = balance
+
+        drawdown = (
+            max_balance -
+            balance
+        )
+
+        max_drawdown = max(
+            max_drawdown,
+            drawdown
+        )
+
+        equity_curve.append(
+            {
+                "trade": len(trades) + 1,
+                "balance": balance
+            }
+        )
+
+        # -------------------------------------------------
+        # Trade record
+        # -------------------------------------------------
+
+        trade = {
+            "trade_id": len(trades) + 1,
+            "signal": signal,
+            "entry_index": entry_index,
+            "exit_index": exit_index,
+            "entry_price": entry_price,
+            "exit_price": actual_exit_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "reason": exit_reason,
+            "return_pct": trade_return * 100,
+            "profit_before_fee": profit_before_fee,
+            "fees": trade_fee,
+            "profit": profit_after_fee,
+            "balance": balance
         }
 
-    # --------------------------------------------------------
-    # GET DATA
-    # --------------------------------------------------------
+        trades.append(
+            native(trade)
+        )
 
-    data = get_historical_candles(
-        symbol,
-        candle_count
+        # -------------------------------------------------
+        # Move after exit
+        # -------------------------------------------------
+
+        i = exit_index + 1
+
+    # =====================================================
+    # FINAL STATISTICS
+    # =====================================================
+
+    total_trades = len(trades)
+
+    win_rate = (
+        wins / total_trades * 100
+        if total_trades > 0
+        else 0.0
     )
 
-    if data["status"] != "ok":
+    buy_win_rate = (
+        buy_wins / buy_trades * 100
+        if buy_trades > 0
+        else 0.0
+    )
 
-        return {
-            "status": "error",
-            "version": VERSION,
-            "symbol": symbol,
-            "timeframe": TIMEFRAME,
-            "requested_candles": candle_count,
-            "actual_candles": data.get(
-                "actual_candles",
-                0
-            ),
-            "source": data.get(
-                "source",
-                "Kraken"
-            ),
-            "message": data.get(
-                "message",
-                "Không lấy được dữ liệu."
-            ),
-        }
+    sell_win_rate = (
+        sell_wins / sell_trades * 100
+        if sell_trades > 0
+        else 0.0
+    )
 
-    rows = data["rows"]
+    average_win = (
+        gross_profit / wins
+        if wins > 0
+        else 0.0
+    )
 
-    if len(rows) < 100:
+    average_loss = (
+        -gross_loss / losses
+        if losses > 0
+        else 0.0
+    )
 
-        return {
-            "status": "error",
-            "version": VERSION,
-            "symbol": symbol,
-            "timeframe": TIMEFRAME,
-            "requested_candles": candle_count,
-            "actual_candles": len(rows),
-            "source": data["source"],
-            "message": (
-                "Không đủ dữ liệu để chạy backtest."
-            ),
-        }
+    profit_before_fees = sum(
+        safe_float(
+            trade["profit_before_fee"]
+        )
+        for trade in trades
+    )
 
-    # --------------------------------------------------------
-    # RUN BACKTEST ENGINE
-    # --------------------------------------------------------
+    total_profit = (
+        balance -
+        initial_balance
+    )
 
-    try:
+    return_pct = (
+        total_profit /
+        initial_balance *
+        100
+        if initial_balance != 0
+        else 0
+    )
 
-        # Phiên bản engine hiện tại có thể nhận
-        # các tham số này.
+    if gross_loss > 0:
 
-        try:
+        profit_factor = (
+            gross_profit /
+            gross_loss
+        )
 
-            result = run_backtest(
-                rows,
-                initial_balance=initial_balance,
-                fee_rate=fee_rate,
-                slippage=slippage,
-            )
+    elif gross_profit > 0:
 
-        except TypeError as first_error:
+        profit_factor = None
 
-            # Fallback nếu engine dùng data=
-            try:
+    else:
 
-                result = run_backtest(
-                    data=rows,
-                    initial_balance=initial_balance,
-                    fee_rate=fee_rate,
-                    slippage=slippage,
-                )
+        profit_factor = 0.0
 
-            except TypeError:
+    max_drawdown_pct = (
+        max_drawdown /
+        max_balance *
+        100
+        if max_balance > 0
+        else 0
+    )
 
-                # Fallback cuối cùng cho engine cũ
-                result = run_backtest(
-                    rows
-                )
+    result = {
 
-    except Exception as exc:
-
-        return {
-            "status": "error",
-            "version": VERSION,
-            "symbol": symbol,
-            "timeframe": TIMEFRAME,
-            "requested_candles": candle_count,
-            "actual_candles": len(rows),
-            "source": data["source"],
-            "message": (
-                f"Lỗi backtest_engine: {exc}"
-            ),
-        }
-
-    return {
         "status": "ok",
+
         "version": VERSION,
-        "symbol": symbol,
-        "timeframe": TIMEFRAME,
-        "requested_candles": candle_count,
-        "actual_candles": len(rows),
-        "source": data["source"],
-        "result": result,
-    }
 
+        "strategy": STRATEGY,
 
-# ============================================================
-# MULTI PERIOD
-# ============================================================
+        "data": {
+            "candles": len(df)
+        },
 
-def run_multi_period_backtest(
-    symbol,
-    periods=None,
-    initial_balance=1000,
-    fee_rate=0.0004,
-    slippage=0.0001,
-):
+        "settings": {
 
-    if periods is None:
+            "initial_balance": initial_balance,
 
-        periods = [
-            720,
-            1440,
-            2160,
-            2880,
-        ]
+            "fee_rate": fee_rate,
 
-    results = []
+            "slippage": slippage
+        },
 
-    for period in periods:
+        "summary": {
 
-        try:
+            "initial_balance": initial_balance,
 
-            result = run_symbol_backtest(
-                symbol,
-                candle_count=period,
-                initial_balance=initial_balance,
-                fee_rate=fee_rate,
-                slippage=slippage,
-            )
+            "final_balance": balance,
 
-        except Exception as exc:
+            "profit": total_profit,
 
-            result = {
-                "status": "error",
-                "symbol": normalize_symbol(
-                    symbol
-                ),
-                "candles": period,
-                "message": str(exc),
-            }
+            "return_pct": return_pct,
 
-        results.append(result)
+            "total_trades": total_trades,
 
-    return {
-        "status": "ok",
-        "version": VERSION,
-        "symbol": normalize_symbol(
-            symbol
+            "wins": wins,
+
+            "losses": losses,
+
+            "win_rate": win_rate,
+
+            "buy_trades": buy_trades,
+
+            "buy_wins": buy_wins,
+
+            "buy_win_rate": buy_win_rate,
+
+            "sell_trades": sell_trades,
+
+            "sell_wins": sell_wins,
+
+            "sell_win_rate": sell_win_rate,
+
+            "average_win": average_win,
+
+            "average_loss": average_loss,
+
+            "gross_profit": gross_profit,
+
+            "gross_loss": gross_loss,
+
+            "profit_before_fees": profit_before_fees,
+
+            "total_fees": total_fees,
+
+            "profit_factor": profit_factor,
+
+            "max_drawdown": max_drawdown,
+
+            "max_drawdown_pct": max_drawdown_pct,
+
+            "max_win_streak": max_win_streak,
+
+            "max_loss_streak": max_loss_streak
+        },
+
+        "equity_curve": native(
+            equity_curve
         ),
-        "timeframe": TIMEFRAME,
-        "periods": results,
+
+        "trades": native(
+            trades
+        )
     }
 
-
-# ============================================================
-# MULTI SYMBOL
-# ============================================================
-
-def run_multi_backtest(
-    symbols=None,
-    periods=None,
-    initial_balance=1000,
-    fee_rate=0.0004,
-    slippage=0.0001,
-):
-
-    if symbols is None:
-
-        symbols = [
-            "BTCUSDT",
-            "ETHUSDT",
-            "SOLUSDT",
-        ]
-
-    if periods is None:
-
-        periods = [
-            720,
-            1440,
-            2160,
-            2880,
-        ]
-
-    output = []
-
-    for symbol in symbols:
-
-        symbol = normalize_symbol(
-            symbol
-        )
-
-        symbol_results = []
-
-        for period in periods:
-
-            try:
-
-                result = run_symbol_backtest(
-                    symbol,
-                    candle_count=period,
-                    initial_balance=initial_balance,
-                    fee_rate=fee_rate,
-                    slippage=slippage,
-                )
-
-            except Exception as exc:
-
-                result = {
-                    "status": "error",
-                    "version": VERSION,
-                    "symbol": symbol,
-                    "requested_candles": period,
-                    "actual_candles": 0,
-                    "message": str(exc),
-                }
-
-            symbol_results.append(
-                result
-            )
-
-        output.append(
-            {
-                "symbol": symbol,
-                "results": symbol_results,
-            }
-        )
-
-    return {
-        "status": "ok",
-        "version": VERSION,
-        "timeframe": TIMEFRAME,
-        "initial_balance": initial_balance,
-        "fee_rate": fee_rate,
-        "slippage": slippage,
-        "symbols": output,
-    }
+    return native(result)
 
 
-# ============================================================
+# =========================================================
 # LOCAL TEST
-# ============================================================
+# =========================================================
 
 if __name__ == "__main__":
 
     print(
-        f"Backtest v{VERSION}"
+        "backtest_engine.py "
+        "VERSION:",
+        VERSION
     )
 
     print(
-        "Historical directory:",
-        HISTORICAL_DIR
+        "STRATEGY:",
+        STRATEGY
     )
 
-    for symbol in PAIR_MAP:
-
-        print(
-            symbol,
-            "=>",
-            get_pair(symbol)
-        )
-
     print(
-        "Allowed candles:",
-        sorted(ALLOWED_CANDLES)
+        "run_backtest = OK"
     )
