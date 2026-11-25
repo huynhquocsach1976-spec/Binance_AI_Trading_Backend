@@ -4,10 +4,11 @@ from ai_analyzer import analyze_market
 from pydantic import BaseModel
 import requests
 
+
 app = FastAPI(
     title="Binance AI Trading Pro Backend",
     description="Backend theo dõi và phân tích thị trường crypto",
-    version="1.4.0"
+    version="1.4.1"
 )
 
 
@@ -202,18 +203,93 @@ def get_history(symbol: str):
             "symbol": symbol,
             "message": str(e)
         }
+
+
+# =========================================================
+# AI ANALYSIS REQUEST
+# =========================================================
+
 class AIAnalysisRequest(BaseModel):
     symbol: str = "BTCUSDT"
     interval: str = "1h"
     data: list
 
 
+# =========================================================
+# AI PHÂN TÍCH THỊ TRƯỜNG
+# =========================================================
+
 @app.post("/ai/analyze")
 def ai_analyze(request: AIAnalysisRequest):
 
-    result = analyze_market(request.data)
+    try:
 
-    result["symbol"] = request.symbol
-    result["timeframe"] = request.interval
+        data = request.data
 
-    return result
+        # -------------------------------------------------
+        # TRƯỜNG HỢP 1:
+        # data = [100 candles]
+        # -------------------------------------------------
+
+        if data and isinstance(data[0], dict) and "close" in data[0]:
+
+            candles = data
+
+        # -------------------------------------------------
+        # TRƯỜNG HỢP 2:
+        # data = [
+        #     {
+        #         "status": "ok",
+        #         "data": [100 candles]
+        #     }
+        # ]
+        # -------------------------------------------------
+
+        elif (
+            data
+            and isinstance(data[0], dict)
+            and "data" in data[0]
+        ):
+
+            candles = data[0]["data"]
+
+        else:
+
+            return {
+                "status": "error",
+                "message": "Cấu trúc dữ liệu nến không hợp lệ"
+            }
+
+        # -------------------------------------------------
+        # KIỂM TRA SỐ LƯỢNG NẾN
+        # -------------------------------------------------
+
+        if len(candles) < 50:
+
+            return {
+                "status": "error",
+                "message": f"Cần ít nhất 50 nến, hiện tại có {len(candles)} nến"
+            }
+
+        # -------------------------------------------------
+        # GỌI AI ANALYZER
+        # -------------------------------------------------
+
+        result = analyze_market(candles)
+
+        # -------------------------------------------------
+        # THÔNG TIN THỊ TRƯỜNG
+        # -------------------------------------------------
+
+        result["symbol"] = request.symbol.upper()
+        result["timeframe"] = request.interval
+        result["candle_count"] = len(candles)
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
