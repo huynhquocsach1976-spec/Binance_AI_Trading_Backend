@@ -1,0 +1,45 @@
+name: Download BTC 1H Historical Data
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download-history:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas
+
+      - name: Download BTC 1H history
+        run: |
+          python download_history.py
+
+      - name: Check generated file
+        run: |
+          ls -lh historical/
+          python -c "import pandas as pd; df=pd.read_csv('historical/XBTUSD_60.csv'); print('Candles:', len(df)); print(df.head()); print(df.tail())"
+
+      - name: Commit historical data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add historical/XBTUSD_60.csv
+
+          git diff --cached --quiet || git commit -m "Add BTC 1H historical data"
+
+          git push
