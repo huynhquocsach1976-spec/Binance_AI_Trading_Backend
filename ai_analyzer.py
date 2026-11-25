@@ -2,27 +2,14 @@ import pandas as pd
 import numpy as np
 
 
-# =========================================================
-# AI ANALYZER VERSION 1.5
-# =========================================================
+VERSION = "1.6.0"
 
-VERSION = "1.5.0"
-
-
-# =========================================================
-# EMA
-# =========================================================
 
 def calculate_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 
-# =========================================================
-# RSI
-# =========================================================
-
 def calculate_rsi(series, period=14):
-
     delta = series.diff()
 
     gain = delta.clip(lower=0)
@@ -38,12 +25,7 @@ def calculate_rsi(series, period=14):
     return rsi.fillna(50)
 
 
-# =========================================================
-# ATR
-# =========================================================
-
 def calculate_atr(df, period=14):
-
     high_low = df["high"] - df["low"]
 
     high_close = (
@@ -55,303 +37,162 @@ def calculate_atr(df, period=14):
     ).abs()
 
     true_range = pd.concat(
-        [
-            high_low,
-            high_close,
-            low_close
-        ],
+        [high_low, high_close, low_close],
         axis=1
     ).max(axis=1)
 
-    atr = true_range.rolling(period).mean()
+    return true_range.rolling(period).mean()
 
-    return atr
-
-
-# =========================================================
-# MACD
-# =========================================================
-
-def calculate_macd(series):
-
-    ema12 = series.ewm(
-        span=12,
-        adjust=False
-    ).mean()
-
-    ema26 = series.ewm(
-        span=26,
-        adjust=False
-    ).mean()
-
-    macd = ema12 - ema26
-
-    signal = macd.ewm(
-        span=9,
-        adjust=False
-    ).mean()
-
-    histogram = macd - signal
-
-    return macd, signal, histogram
-
-
-# =========================================================
-# VWAP
-# =========================================================
 
 def calculate_vwap(df):
-
-    # Nếu dữ liệu đã có VWAP từ Kraken
     if "vwap" in df.columns:
+        return df["vwap"].iloc[-1]
 
-        return df["vwap"]
-
-    # Tự tính VWAP nếu không có
     typical_price = (
-        df["high"]
-        + df["low"]
-        + df["close"]
+        df["high"] +
+        df["low"] +
+        df["close"]
     ) / 3
+
+    cumulative_volume = df["volume"].cumsum()
 
     cumulative_price_volume = (
         typical_price * df["volume"]
     ).cumsum()
 
-    cumulative_volume = (
-        df["volume"].cumsum()
+    vwap = (
+        cumulative_price_volume /
+        cumulative_volume
     )
 
-    return (
-        cumulative_price_volume
-        / cumulative_volume
-    )
+    return vwap.iloc[-1]
 
 
-# =========================================================
-# PHÂN TÍCH THỊ TRƯỜNG
-# =========================================================
+def analyze_market(candles):
 
-def analyze_market(data):
-
-    # -----------------------------------------------------
-    # KIỂM TRA DỮ LIỆU
-    # -----------------------------------------------------
-
-    if not data:
-
+    if not candles or len(candles) < 50:
         return {
             "status": "error",
-            "message": "Không có dữ liệu nến"
+            "message": "Cần ít nhất 50 nến"
         }
 
-    if len(data) < 50:
-
-        return {
-            "status": "error",
-            "message": (
-                f"Cần ít nhất 50 nến, "
-                f"hiện tại có {len(data)} nến"
-            )
-        }
-
-    # -----------------------------------------------------
-    # DATAFRAME
-    # -----------------------------------------------------
-
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(candles).copy()
 
     required_columns = [
         "open",
         "high",
         "low",
-        "close"
+        "close",
+        "volume"
     ]
 
     for column in required_columns:
-
         if column not in df.columns:
-
             return {
                 "status": "error",
-                "message": (
-                    f"Thiếu dữ liệu: {column}"
-                )
+                "message": f"Thiếu dữ liệu: {column}"
             }
 
-    # -----------------------------------------------------
-    # CHUYỂN KIỂU DỮ LIỆU
-    # -----------------------------------------------------
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce"
+        )
 
-    numeric_columns = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "vwap",
-        "volume",
-        "trades"
-    ]
+    if "trades" not in df.columns:
+        df["trades"] = 0
 
-    for column in numeric_columns:
+    df["trades"] = pd.to_numeric(
+        df["trades"],
+        errors="coerce"
+    ).fillna(0)
 
-        if column in df.columns:
-
-            df[column] = pd.to_numeric(
-                df[column],
-                errors="coerce"
-            )
-
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close"
-        ]
-    ).reset_index(drop=True)
-
-    if len(df) < 50:
-
-        return {
-            "status": "error",
-            "message": "Dữ liệu hợp lệ dưới 50 nến"
-        }
-
-    # -----------------------------------------------------
-    # INDICATORS
-    # -----------------------------------------------------
+    df = df.dropna().reset_index(drop=True)
 
     close = df["close"]
 
+    # =========================
     # EMA
-    df["ema20"] = calculate_ema(
-        close,
-        20
-    )
+    # =========================
 
-    df["ema50"] = calculate_ema(
-        close,
-        50
-    )
+    df["ema20"] = calculate_ema(close, 20)
+    df["ema50"] = calculate_ema(close, 50)
 
+    # =========================
     # RSI
-    df["rsi"] = calculate_rsi(
-        close,
-        14
-    )
+    # =========================
 
+    df["rsi"] = calculate_rsi(close, 14)
+
+    # =========================
     # ATR
-    df["atr"] = calculate_atr(
-        df,
-        14
-    )
+    # =========================
 
+    df["atr"] = calculate_atr(df, 14)
+
+    # =========================
     # MACD
-    (
+    # =========================
+
+    ema12 = calculate_ema(close, 12)
+    ema26 = calculate_ema(close, 26)
+
+    df["macd"] = ema12 - ema26
+    df["macd_signal"] = calculate_ema(
         df["macd"],
-        df["macd_signal"],
-        df["macd_histogram"]
-    ) = calculate_macd(close)
+        9
+    )
 
+    df["macd_histogram"] = (
+        df["macd"] -
+        df["macd_signal"]
+    )
+
+    # =========================
     # VWAP
-    df["calculated_vwap"] = calculate_vwap(df)
+    # =========================
 
-    # -----------------------------------------------------
-    # LẤY NẾN CUỐI
-    # -----------------------------------------------------
+    vwap = calculate_vwap(df)
 
-    last = df.iloc[-1]
+    # =========================
+    # Volume
+    # =========================
 
-    price = float(last["close"])
+    volume_avg20 = df["volume"].rolling(20).mean().iloc[-1]
 
-    ema20 = float(last["ema20"])
+    current_volume = df["volume"].iloc[-1]
 
-    ema50 = float(last["ema50"])
-
-    rsi = float(last["rsi"])
-
-    atr = float(last["atr"])
-
-    macd = float(last["macd"])
-
-    macd_signal = float(
-        last["macd_signal"]
-    )
-
-    macd_histogram = float(
-        last["macd_histogram"]
-    )
-
-    vwap = float(
-        last["calculated_vwap"]
-    )
-
-    # -----------------------------------------------------
-    # VOLUME
-    # -----------------------------------------------------
-
-    if "volume" in df.columns:
-
-        volume = float(last["volume"])
-
-        volume_avg20 = float(
-            df["volume"]
-            .rolling(20)
-            .mean()
-            .iloc[-1]
+    if volume_avg20 > 0:
+        volume_ratio = (
+            current_volume /
+            volume_avg20
         )
-
-        if volume_avg20 > 0:
-
-            volume_ratio = (
-                volume / volume_avg20
-            )
-
-        else:
-
-            volume_ratio = 1.0
-
     else:
+        volume_ratio = 0
 
-        volume = 0.0
-        volume_avg20 = 0.0
-        volume_ratio = 1.0
+    # =========================
+    # Trades
+    # =========================
 
-    # -----------------------------------------------------
-    # TRADES
-    # -----------------------------------------------------
+    trades_avg20 = (
+        df["trades"]
+        .rolling(20)
+        .mean()
+        .iloc[-1]
+    )
 
-    if "trades" in df.columns:
+    current_trades = df["trades"].iloc[-1]
 
-        trades = float(last["trades"])
-
-        trades_avg20 = float(
-            df["trades"]
-            .rolling(20)
-            .mean()
-            .iloc[-1]
+    if trades_avg20 > 0:
+        trades_ratio = (
+            current_trades /
+            trades_avg20
         )
-
-        if trades_avg20 > 0:
-
-            trades_ratio = (
-                trades / trades_avg20
-            )
-
-        else:
-
-            trades_ratio = 1.0
-
     else:
+        trades_ratio = 0
 
-        trades = 0.0
-        trades_avg20 = 0.0
-        trades_ratio = 1.0
-
-    # -----------------------------------------------------
-    # SUPPORT / RESISTANCE
-    # -----------------------------------------------------
+    # =========================
+    # Support / Resistance
+    # =========================
 
     recent = df.tail(30)
 
@@ -363,323 +204,290 @@ def analyze_market(data):
         recent["high"].max()
     )
 
-    # -----------------------------------------------------
-    # BREAKOUT / BREAKDOWN
-    # -----------------------------------------------------
+    # =========================
+    # Breakout / Breakdown
+    # =========================
 
-    previous_20 = df.iloc[-21:-1]
+    previous20 = df.iloc[-21:-1]
 
-    previous_resistance = float(
-        previous_20["high"].max()
-    )
+    previous_high = previous20["high"].max()
+    previous_low = previous20["low"].min()
 
-    previous_support = float(
-        previous_20["low"].min()
+    current_price = float(
+        df["close"].iloc[-1]
     )
 
     breakout = (
-        price > previous_resistance
+        current_price >
+        previous_high
     )
 
     breakdown = (
-        price < previous_support
+        current_price <
+        previous_low
     )
 
-    # -----------------------------------------------------
-    # SCORE
-    # -----------------------------------------------------
+    # =========================
+    # Current candle
+    # =========================
+
+    current_open = float(
+        df["open"].iloc[-1]
+    )
+
+    bullish_candle = (
+        current_price >
+        current_open
+    )
+
+    bearish_candle = (
+        current_price <
+        current_open
+    )
+
+    # =========================
+    # Score
+    # =========================
 
     score = 0
-
     reasons = []
 
-    bullish_signals = []
-    bearish_signals = []
-
-    # =====================================================
-    # 1. EMA TREND
-    # =====================================================
-
-    if ema20 > ema50:
-
+    # EMA trend
+    if df["ema20"].iloc[-1] > df["ema50"].iloc[-1]:
         score += 2
-
-        bullish_signals.append(
-            "EMA20 nằm trên EMA50"
-        )
-
+        reasons.append("EMA20 nằm trên EMA50")
     else:
-
         score -= 2
+        reasons.append("EMA20 nằm dưới EMA50")
 
-        bearish_signals.append(
-            "EMA20 nằm dưới EMA50"
-        )
-
-    # =====================================================
-    # 2. PRICE VS EMA20
-    # =====================================================
-
-    if price > ema20:
-
+    # Price vs EMA20
+    if current_price > df["ema20"].iloc[-1]:
         score += 2
-
-        bullish_signals.append(
-            "Giá nằm trên EMA20"
-        )
-
+        reasons.append("Giá nằm trên EMA20")
     else:
-
         score -= 2
+        reasons.append("Giá nằm dưới EMA20")
 
-        bearish_signals.append(
-            "Giá nằm dưới EMA20"
-        )
-
-    # =====================================================
-    # 3. RSI
-    # =====================================================
+    # RSI
+    rsi = float(df["rsi"].iloc[-1])
 
     if rsi >= 55:
-
         score += 2
-
-        bullish_signals.append(
-            "RSI mạnh"
-        )
-
+        reasons.append("RSI mạnh")
     elif rsi >= 50:
-
         score += 1
-
-        bullish_signals.append(
-            "RSI trên 50"
-        )
-
+        reasons.append("RSI hơi tích cực")
     elif rsi <= 35:
-
         score -= 2
-
-        bearish_signals.append(
-            "RSI yếu / gần quá bán"
-        )
-
-    elif rsi < 50:
-
+        reasons.append("RSI rất yếu")
+    else:
         score -= 1
+        reasons.append("RSI yếu")
 
-        bearish_signals.append(
-            "RSI yếu"
-        )
-
-    # =====================================================
-    # 4. MACD
-    # =====================================================
+    # MACD
+    macd = float(df["macd"].iloc[-1])
+    macd_signal = float(
+        df["macd_signal"].iloc[-1]
+    )
+    macd_histogram = float(
+        df["macd_histogram"].iloc[-1]
+    )
 
     if macd > macd_signal:
-
         score += 2
-
-        bullish_signals.append(
-            "MACD bullish"
-        )
-
+        reasons.append("MACD tích cực")
     else:
-
         score -= 2
+        reasons.append("MACD tiêu cực")
 
-        bearish_signals.append(
-            "MACD bearish"
-        )
-
-    # MACD histogram
     if macd_histogram > 0:
-
         score += 1
-
-        bullish_signals.append(
-            "MACD Histogram dương"
-        )
-
     else:
-
         score -= 1
 
-        bearish_signals.append(
-            "MACD Histogram âm"
-        )
-
-    # =====================================================
-    # 5. VWAP
-    # =====================================================
-
-    if price > vwap:
-
+    # VWAP
+    if current_price > vwap:
         score += 2
-
-        bullish_signals.append(
-            "Giá nằm trên VWAP"
-        )
-
+        reasons.append("Giá nằm trên VWAP")
     else:
-
         score -= 2
+        reasons.append("Giá nằm dưới VWAP")
 
-        bearish_signals.append(
-            "Giá nằm dưới VWAP"
-        )
-
-    # =====================================================
-    # 6. VOLUME
-    # =====================================================
+    # =========================
+    # Volume confirmation
+    # =========================
 
     if volume_ratio >= 1.5:
 
-        if price > last["open"]:
-
+        if bullish_candle:
             score += 2
-
-            bullish_signals.append(
-                "Volume tăng mạnh kèm nến tăng"
+            reasons.append(
+                "Volume tăng mạnh xác nhận bên mua"
             )
 
-        else:
-
+        elif bearish_candle:
             score -= 2
-
-            bearish_signals.append(
-                "Volume tăng mạnh kèm nến giảm"
+            reasons.append(
+                "Volume tăng mạnh xác nhận bên bán"
             )
 
     elif volume_ratio >= 1.2:
 
-        if price > last["open"]:
-
+        if bullish_candle:
             score += 1
-
-            bullish_signals.append(
-                "Volume tăng"
+            reasons.append(
+                "Volume cao hơn trung bình"
             )
 
-        else:
-
+        elif bearish_candle:
             score -= 1
-
-            bearish_signals.append(
-                "Volume tăng nhưng nến giảm"
+            reasons.append(
+                "Volume cao hơn trung bình"
             )
 
-    # =====================================================
-    # 7. TRADES
-    # =====================================================
+    else:
+
+        reasons.append(
+            "Volume thấp, chưa xác nhận xu hướng"
+        )
+
+    # =========================
+    # Trades confirmation
+    # =========================
 
     if trades_ratio >= 1.5:
 
-        if price > last["open"]:
-
+        if bullish_candle:
             score += 1
-
-            bullish_signals.append(
-                "Số lệnh giao dịch tăng mạnh"
+            reasons.append(
+                "Số lệnh tăng mạnh xác nhận bên mua"
             )
 
-        else:
-
+        elif bearish_candle:
             score -= 1
-
-            bearish_signals.append(
-                "Số lệnh giao dịch tăng mạnh khi giá giảm"
+            reasons.append(
+                "Số lệnh tăng mạnh xác nhận bên bán"
             )
 
-    # =====================================================
-    # 8. BREAKOUT
-    # =====================================================
+    elif trades_ratio < 0.5:
+
+        reasons.append(
+            "Số lệnh thấp, thị trường thiếu xác nhận"
+        )
+
+    # =========================
+    # Breakout
+    # =========================
 
     if breakout:
-
         score += 3
-
-        bullish_signals.append(
-            "Breakout kháng cự"
+        reasons.append(
+            "Breakout vượt đỉnh 20 nến"
         )
-
-    # =====================================================
-    # 9. BREAKDOWN
-    # =====================================================
 
     if breakdown:
-
         score -= 3
-
-        bearish_signals.append(
-            "Breakdown hỗ trợ"
+        reasons.append(
+            "Breakdown thủng đáy 20 nến"
         )
 
-    # =====================================================
-    # TẠO REASONS
-    # =====================================================
+    # =========================
+    # Market condition
+    # =========================
 
-    if score > 0:
+    if score >= 6:
+        market_condition = "BULLISH"
 
-        reasons = bullish_signals[:]
+    elif score <= -6:
+        market_condition = "BEARISH"
 
-        if not reasons:
-
-            reasons = [
-                "Một số chỉ báo đang nghiêng về tăng"
-            ]
+    elif score > 0:
+        market_condition = "WEAK_BULLISH"
 
     elif score < 0:
-
-        reasons = bearish_signals[:]
-
-        if not reasons:
-
-            reasons = [
-                "Một số chỉ báo đang nghiêng về giảm"
-            ]
+        market_condition = "WEAK_BEARISH"
 
     else:
+        market_condition = "SIDEWAYS"
 
-        reasons = [
-            "Các chỉ báo đang cân bằng"
-        ]
-
-    # =====================================================
-    # SIGNAL
-    # =====================================================
+    # =========================
+    # Signal
+    # =========================
 
     if score >= 8:
-
         signal = "BUY"
 
     elif score <= -8:
-
         signal = "SELL"
 
     else:
-
         signal = "HOLD"
 
-    # =====================================================
-    # CONFIDENCE
-    # =====================================================
+    # =========================
+    # Confirmation filter
+    # =========================
 
-    max_score = 17
+    low_volume = volume_ratio < 0.5
+    low_trades = trades_ratio < 0.5
+
+    confirmation_warning = False
+
+    if low_volume or low_trades:
+        confirmation_warning = True
+
+    # Nếu volume/trades quá thấp
+    # không cho BUY/SELL mạnh
+    if signal in ["BUY", "SELL"]:
+
+        if low_volume and low_trades:
+
+            signal = "HOLD"
+
+            reasons.append(
+                "Tín hiệu bị hạ xuống HOLD vì "
+                "Volume và Trades quá thấp"
+            )
+
+        elif low_volume:
+
+            signal = "HOLD"
+
+            reasons.append(
+                "Tín hiệu bị hạ xuống HOLD vì "
+                "Volume quá thấp"
+            )
+
+        elif low_trades:
+
+            signal = "HOLD"
+
+            reasons.append(
+                "Tín hiệu bị hạ xuống HOLD vì "
+                "Trades quá thấp"
+            )
+
+    # =========================
+    # Confidence
+    # =========================
 
     confidence = (
-        abs(score)
-        / max_score
-        * 100
-    )
+        abs(score) / 17
+    ) * 100
 
     confidence = min(
         confidence,
         95
     )
 
-    if signal == "HOLD":
+    # giảm confidence khi thiếu volume
+    if low_volume:
+        confidence *= 0.75
 
+    # giảm thêm khi trades thấp
+    if low_trades:
+        confidence *= 0.85
+
+    if signal == "HOLD":
         confidence = max(
             50,
             confidence
@@ -690,105 +498,147 @@ def analyze_market(data):
         2
     )
 
-    # =====================================================
-    # STOP LOSS / TAKE PROFIT
-    # =====================================================
+    # =========================
+    # ATR / Risk management
+    # =========================
 
-    if not np.isfinite(atr) or atr <= 0:
+    atr = float(
+        df["atr"].iloc[-1]
+    )
 
-        atr = max(
-            price * 0.01,
-            1
-        )
+    entry = current_price
 
-    entry = price
+    stop_loss = None
+    take_profit = None
+    risk_reward = None
 
     if signal == "BUY":
 
-        stop_loss = (
-            entry - atr * 1.5
+        stop_loss = entry - (
+            1.5 * atr
         )
 
-        take_profit = (
-            entry + atr * 3
+        take_profit = entry + (
+            3 * atr
         )
+
+        risk_reward = 2
 
     elif signal == "SELL":
 
-        stop_loss = (
-            entry + atr * 1.5
+        stop_loss = entry + (
+            1.5 * atr
         )
 
-        take_profit = (
-            entry - atr * 3
+        take_profit = entry - (
+            3 * atr
         )
+
+        risk_reward = 2
+
+    # =========================
+    # Trade allowed
+    # =========================
+
+    trade_allowed = (
+        signal in ["BUY", "SELL"]
+        and not low_volume
+        and not low_trades
+    )
+
+    # =========================
+    # Reason summary
+    # =========================
+
+    if trade_allowed:
+
+        if signal == "BUY":
+
+            confirmation_reason = (
+                "Tín hiệu BUY được xác nhận "
+                "bởi xu hướng và thanh khoản"
+            )
+
+        else:
+
+            confirmation_reason = (
+                "Tín hiệu SELL được xác nhận "
+                "bởi xu hướng và thanh khoản"
+            )
 
     else:
 
-        stop_loss = None
-        take_profit = None
+        if low_volume and low_trades:
 
-    # =====================================================
-    # ROUND
-    # =====================================================
+            confirmation_reason = (
+                "Xu hướng chưa đủ xác nhận: "
+                "Volume và Trades thấp"
+            )
 
-    entry = round(
-        entry,
-        2
-    )
+        elif low_volume:
 
-    stop_loss = (
-        round(stop_loss, 2)
-        if stop_loss is not None
-        else None
-    )
+            confirmation_reason = (
+                "Xu hướng chưa đủ xác nhận: "
+                "Volume thấp"
+            )
 
-    take_profit = (
-        round(take_profit, 2)
-        if take_profit is not None
-        else None
-    )
+        elif low_trades:
 
-    # =====================================================
-    # RESULT
-    # =====================================================
+            confirmation_reason = (
+                "Xu hướng chưa đủ xác nhận: "
+                "Trades thấp"
+            )
+
+        else:
+
+            confirmation_reason = (
+                "Chưa có tín hiệu giao dịch đủ mạnh"
+            )
+
+    # =========================
+    # Return
+    # =========================
 
     return {
-
         "status": "ok",
-
         "version": VERSION,
 
         "signal": signal,
-
         "confidence": confidence,
 
-        "price": round(
-            price,
-            2
-        ),
+        "market_condition": market_condition,
 
+        "trade_allowed": trade_allowed,
+
+        "confirmation_warning": confirmation_warning,
+
+        "confirmation_reason": confirmation_reason,
+
+        "price": entry,
         "entry": entry,
 
-        "stop_loss": stop_loss,
-
-        "take_profit": take_profit,
-
-        "risk_reward": (
-            2
-            if signal != "HOLD"
+        "stop_loss": (
+            round(stop_loss, 2)
+            if stop_loss is not None
             else None
         ),
 
-        "indicators": {
+        "take_profit": (
+            round(take_profit, 2)
+            if take_profit is not None
+            else None
+        ),
 
+        "risk_reward": risk_reward,
+
+        "indicators": {
             "ema20": round(
-                ema20,
+                float(df["ema20"].iloc[-1]),
                 2
             ),
 
             "ema50": round(
-                ema50,
+                float(df["ema50"].iloc[-1]),
                 2
             ),
 
@@ -818,36 +668,36 @@ def analyze_market(data):
             ),
 
             "vwap": round(
-                vwap,
+                float(vwap),
                 2
             ),
 
             "volume": round(
-                volume,
+                current_volume,
                 6
             ),
 
             "volume_avg20": round(
-                volume_avg20,
+                float(volume_avg20),
                 6
             ),
 
             "volume_ratio": round(
-                volume_ratio,
+                float(volume_ratio),
                 2
             ),
 
             "trades": int(
-                trades
+                current_trades
             ),
 
             "trades_avg20": round(
-                trades_avg20,
+                float(trades_avg20),
                 2
             ),
 
             "trades_ratio": round(
-                trades_ratio,
+                float(trades_ratio),
                 2
             )
         },
@@ -863,7 +713,6 @@ def analyze_market(data):
         ),
 
         "breakout": breakout,
-
         "breakdown": breakdown,
 
         "score": score,
