@@ -2,9 +2,6 @@ import os
 import csv
 import requests
 
-from backtest_engine import run_backtest
-
-
 VERSION = "1.2.3"
 TIMEFRAME = "1h"
 
