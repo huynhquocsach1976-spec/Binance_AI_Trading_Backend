@@ -3,6 +3,7 @@ from datetime import datetime
 from ai_analyzer import analyze_market
 from backtest_engine import run_backtest
 from pydantic import BaseModel
+from backtest_v12 import run_multi_backtest, build_summary
 import requests
 
 
@@ -415,5 +416,40 @@ def backtest_symbol(
         return {
             "status": "error",
             "symbol": symbol,
+            "message": str(e)
+        }
+        @app.get("/backtest-all")
+def backtest_all(
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001
+):
+    try:
+        result = run_multi_backtest(
+            symbols=[
+                "BTCUSDT",
+                "ETHUSDT",
+                "SOLUSDT"
+            ],
+            periods=[
+                720,
+                1440,
+                2160,
+                2880
+            ],
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage
+        )
+
+        result["summary"] = build_summary(
+            result["results"]
+        )
+
+        return result
+
+    except Exception as e:
+        return {
+            "status": "error",
             "message": str(e)
         }
