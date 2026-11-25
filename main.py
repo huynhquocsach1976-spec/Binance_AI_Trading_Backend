@@ -5,7 +5,7 @@ import requests
 app = FastAPI(
     title="Binance AI Trading Pro Backend",
     description="Backend theo dõi và phân tích thị trường crypto",
-    version="1.2.0"
+    version="1.3.0"
 )
 
 
@@ -35,29 +35,29 @@ def get_price(symbol: str):
 
     symbol = symbol.upper()
 
-    coin_map = {
-        "BTCUSDT": "bitcoin",
-        "ETHUSDT": "ethereum",
-        "SOLUSDT": "solana"
+    pair_map = {
+        "BTCUSDT": "XBTUSD",
+        "ETHUSDT": "ETHUSD",
+        "SOLUSDT": "SOLUSD"
     }
 
-    if symbol not in coin_map:
+    if symbol not in pair_map:
         return {
             "status": "error",
             "symbol": symbol,
             "message": "Symbol chưa được hỗ trợ"
         }
 
-    coin_id = coin_map[symbol]
+    pair = pair_map[symbol]
 
-    url = "https://api.coingecko.com/api/v3/simple/price"
+    url = "https://api.kraken.com/0/public/Ticker"
 
     try:
+
         response = requests.get(
             url,
             params={
-                "ids": coin_id,
-                "vs_currencies": "usd"
+                "pair": pair
             },
             timeout=10
         )
@@ -71,14 +71,25 @@ def get_price(symbol: str):
 
         data = response.json()
 
-        price = data[coin_id]["usd"]
+        if data.get("error"):
+            return {
+                "status": "error",
+                "symbol": symbol,
+                "message": data["error"]
+            }
+
+        result = data["result"]
+
+        ticker = next(iter(result.values()))
+
+        price = float(ticker["c"][0])
 
         return {
             "status": "ok",
             "symbol": symbol,
             "price": price,
             "currency": "USD",
-            "source": "CoinGecko"
+            "source": "Kraken"
         }
 
     except Exception as e:
