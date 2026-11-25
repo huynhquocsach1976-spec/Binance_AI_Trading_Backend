@@ -1,526 +1,1278 @@
 import math
-from collections import defaultdict
 
 
-VERSION = "1.0.0"
+VERSION = "1.2.0"
 
 
-def _safe_float(value, default=0.0):
+# =========================================================
+# SAFE CONVERSION
+# =========================================================
+
+def safe_float(value, default=0.0):
     try:
         if value is None:
-            return default
+            return float(default)
+
         value = float(value)
+
         if not math.isfinite(value):
-            return default
+            return float(default)
+
         return value
+
     except Exception:
-        return default
+        return float(default)
 
 
-def _get_trade_result(trade):
-    """
-    Chuẩn hóa kết quả của một trade.
-    Hỗ trợ nhiều tên field khác nhau để tương thích
-    với backtest_engine hiện tại.
-    """
+def safe_int(value, default=0):
+    try:
+        if value is None:
+            return int(default)
 
-    result = str(
-        trade.get("result")
-        or trade.get("exit_reason")
-        or trade.get("reason")
-        or ""
-    ).upper()
+        return int(value)
 
-    if "TAKE" in result or "TP" in result:
-        return "TAKE_PROFIT"
-
-    if "STOP" in result or "SL" in result:
-        return "STOP_LOSS"
-
-    if "END" in result:
-        return "END_OF_DATA"
-
-    # Một số engine có thể dùng pnl để xác định
-    pnl = _safe_float(
-        trade.get("pnl"),
-        _safe_float(trade.get("profit"), 0.0)
-    )
-
-    if pnl > 0:
-        return "WIN"
-
-    if pnl < 0:
-        return "LOSS"
-
-    return "UNKNOWN"
+    except Exception:
+        return int(default)
 
 
-def _get_pnl(trade):
-    return _safe_float(
-        trade.get("pnl"),
-        _safe_float(
-            trade.get("profit"),
-            _safe_float(trade.get("net_pnl"), 0.0)
-        )
-    )
+# =========================================================
+# NATIVE
+# =========================================================
+
+def native(value):
+
+    if isinstance(value, dict):
+
+        return {
+            str(k): native(v)
+            for k, v in value.items()
+        }
+
+    if isinstance(value, (list, tuple)):
+
+        return [
+            native(v)
+            for v in value
+        ]
+
+    if isinstance(value, float):
+
+        if not math.isfinite(value):
+
+            return None
+
+    return value
 
 
-def _get_side(trade):
-    side = str(
-        trade.get("side")
-        or trade.get("signal")
-        or trade.get("direction")
-        or ""
-    ).upper()
+# =========================================================
+# EMPTY STATISTICS
+# =========================================================
 
-    if side in ("BUY", "LONG"):
-        return "BUY"
+def empty_stats():
 
-    if side in ("SELL", "SHORT"):
-        return "SELL"
-
-    return "UNKNOWN"
-
-
-def _get_regime(trade):
-    regime = str(
-        trade.get("market_condition")
-        or trade.get("regime")
-        or trade.get("market_regime")
-        or trade.get("condition")
-        or ""
-    ).upper()
-
-    if not regime:
-        return "UNKNOWN"
-
-    return regime
+    return {
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate": 0.0,
+        "profit": 0.0,
+        "gross_profit": 0.0,
+        "gross_loss": 0.0,
+        "average_win": 0.0,
+        "average_loss": 0.0,
+        "profit_factor": 0.0
+    }
 
 
-def _calculate_group(trades):
-    total = len(trades)
+# =========================================================
+# CALCULATE STATISTICS
+# =========================================================
+
+def calculate_stats(trades):
+
+    result = empty_stats()
+
+    if not trades:
+
+        return result
 
     wins = 0
     losses = 0
-    profit = 0.0
+
     gross_profit = 0.0
     gross_loss = 0.0
 
     for trade in trades:
-        pnl = _get_pnl(trade)
 
-        profit += pnl
+        profit = safe_float(
+            trade.get("profit"),
+            0.0
+        )
 
-        if pnl > 0:
+        if profit > 0:
+
             wins += 1
-            gross_profit += pnl
 
-        elif pnl < 0:
+            gross_profit += profit
+
+        else:
+
             losses += 1
-            gross_loss += abs(pnl)
 
-    win_rate = (wins / total * 100) if total else 0.0
+            gross_loss += abs(profit)
+
+    total = len(trades)
+
+    profit = sum(
+        safe_float(
+            trade.get("profit"),
+            0.0
+        )
+        for trade in trades
+    )
+
+    win_rate = (
+        wins / total * 100
+        if total > 0
+        else 0.0
+    )
+
+    average_win = (
+        gross_profit / wins
+        if wins > 0
+        else 0.0
+    )
+
+    average_loss = (
+        -gross_loss / losses
+        if losses > 0
+        else 0.0
+    )
 
     if gross_loss > 0:
-        profit_factor = gross_profit / gross_loss
-    else:
+
+        profit_factor = (
+            gross_profit /
+            gross_loss
+        )
+
+    elif gross_profit > 0:
+
         profit_factor = None
 
-    average_win = gross_profit / wins if wins else 0.0
-    average_loss = -(gross_loss / losses) if losses else 0.0
+    else:
 
-    return {
+        profit_factor = 0.0
+
+    result = {
+
         "trades": total,
+
         "wins": wins,
+
         "losses": losses,
-        "win_rate": round(win_rate, 2),
-        "profit": round(profit, 4),
-        "gross_profit": round(gross_profit, 4),
-        "gross_loss": round(gross_loss, 4),
-        "average_win": round(average_win, 4),
-        "average_loss": round(average_loss, 4),
-        "profit_factor": (
-            round(profit_factor, 4)
-            if profit_factor is not None
-            else None
+
+        "win_rate": round(
+            win_rate,
+            2
         ),
-    }
 
-
-def _find_trades(result):
-    """
-    Tìm danh sách trades trong output của backtest_engine.
-    """
-
-    if not isinstance(result, dict):
-        return []
-
-    candidates = [
-        result.get("trades"),
-        result.get("trade_history"),
-        result.get("trade_records"),
-    ]
-
-    # Trường hợp run_backtest trả:
-    # {
-    #   "status": "ok",
-    #   "result": {
-    #       "trades": [...]
-    #   }
-    # }
-    nested = result.get("result")
-
-    if isinstance(nested, dict):
-        candidates.extend([
-            nested.get("trades"),
-            nested.get("trade_history"),
-            nested.get("trade_records"),
-        ])
-
-    for candidate in candidates:
-        if isinstance(candidate, list):
-            return candidate
-
-    return []
-
-
-def _find_summary(result):
-    if not isinstance(result, dict):
-        return {}
-
-    summary = result.get("summary")
-
-    if isinstance(summary, dict):
-        return summary
-
-    nested = result.get("result")
-
-    if isinstance(nested, dict):
-        summary = nested.get("summary")
-
-        if isinstance(summary, dict):
-            return summary
-
-    return {}
-
-
-def _find_debug(result):
-    if not isinstance(result, dict):
-        return {}
-
-    debug = result.get("debug")
-
-    if isinstance(debug, dict):
-        return debug
-
-    nested = result.get("result")
-
-    if isinstance(nested, dict):
-        debug = nested.get("debug")
-
-        if isinstance(debug, dict):
-            return debug
-
-    return {}
-
-
-def _analyze_exit_reasons(trades):
-    data = defaultdict(list)
-
-    for trade in trades:
-        reason = _get_trade_result(trade)
-
-        data[reason].append(trade)
-
-    output = {}
-
-    for reason, reason_trades in data.items():
-        stats = _calculate_group(reason_trades)
-
-        output[reason] = stats
-
-    return output
-
-
-def _analyze_side(trades):
-    data = defaultdict(list)
-
-    for trade in trades:
-        side = _get_side(trade)
-
-        data[side].append(trade)
-
-    output = {}
-
-    for side, side_trades in data.items():
-        output[side] = _calculate_group(side_trades)
-
-    return output
-
-
-def _analyze_regime(trades):
-    data = defaultdict(list)
-
-    for trade in trades:
-        regime = _get_regime(trade)
-
-        data[regime].append(trade)
-
-    output = {}
-
-    for regime, regime_trades in data.items():
-        output[regime] = _calculate_group(regime_trades)
-
-    return output
-
-
-def _calculate_fee_impact(summary):
-    """
-    So sánh lợi nhuận trước phí và sau phí.
-    """
-
-    profit_before_fees = _safe_float(
-        summary.get("profit_before_fees"),
-        0.0
-    )
-
-    total_fees = _safe_float(
-        summary.get("total_fees"),
-        0.0
-    )
-
-    profit_after_fees = _safe_float(
-        summary.get("profit"),
-        0.0
-    )
-
-    return {
-        "profit_before_fees": round(profit_before_fees, 4),
-        "total_fees": round(total_fees, 4),
-        "profit_after_fees": round(profit_after_fees, 4),
-        "fee_impact": round(
-            profit_after_fees - profit_before_fees,
+        "profit": round(
+            profit,
             4
         ),
+
+        "gross_profit": round(
+            gross_profit,
+            4
+        ),
+
+        "gross_loss": round(
+            gross_loss,
+            4
+        ),
+
+        "average_win": round(
+            average_win,
+            4
+        ),
+
+        "average_loss": round(
+            average_loss,
+            4
+        ),
+
+        "profit_factor": (
+            round(
+                profit_factor,
+                4
+            )
+            if profit_factor is not None
+            else None
+        )
+    }
+
+    return result
+
+
+# =========================================================
+# NORMALIZE MARKET CONDITION
+# =========================================================
+
+def get_market_condition(trade):
+
+    value = trade.get(
+        "market_condition"
+    )
+
+    if value is None:
+
+        value = trade.get(
+            "market_regime"
+        )
+
+    if value is None:
+
+        value = trade.get(
+            "regime"
+        )
+
+    if value is None:
+
+        value = trade.get(
+            "condition"
+        )
+
+    if value is None:
+
+        return "UNKNOWN"
+
+    value = str(
+        value
+    ).upper().strip()
+
+    if not value:
+
+        return "UNKNOWN"
+
+    return value
+
+
+# =========================================================
+# NORMALIZE SCORE
+# =========================================================
+
+def get_score(trade):
+
+    value = trade.get(
+        "score"
+    )
+
+    if value is None:
+
+        return None
+
+    try:
+
+        return int(
+            float(value)
+        )
+
+    except Exception:
+
+        return None
+
+
+# =========================================================
+# SIDE ANALYSIS
+# =========================================================
+
+def analyze_side(trades):
+
+    groups = {
+        "BUY": [],
+        "SELL": []
+    }
+
+    for trade in trades:
+
+        signal = str(
+            trade.get(
+                "signal",
+                ""
+            )
+        ).upper()
+
+        if signal in groups:
+
+            groups[signal].append(
+                trade
+            )
+
+    return {
+
+        "BUY": calculate_stats(
+            groups["BUY"]
+        ),
+
+        "SELL": calculate_stats(
+            groups["SELL"]
+        )
     }
 
 
-def _generate_conclusion(
+# =========================================================
+# EXIT ANALYSIS
+# =========================================================
+
+def analyze_exits(trades):
+
+    groups = {
+        "STOP_LOSS": [],
+        "TAKE_PROFIT": [],
+        "END_OF_DATA": []
+    }
+
+    for trade in trades:
+
+        reason = trade.get(
+            "exit_reason"
+        )
+
+        if reason is None:
+
+            reason = trade.get(
+                "reason"
+            )
+
+        if reason is None:
+
+            reason = "UNKNOWN"
+
+        reason = str(
+            reason
+        ).upper()
+
+        if reason not in groups:
+
+            groups[reason] = []
+
+        groups[reason].append(
+            trade
+        )
+
+    return {
+        reason: calculate_stats(
+            group
+        )
+        for reason, group in groups.items()
+    }
+
+
+# =========================================================
+# REGIME ANALYSIS
+# =========================================================
+
+def analyze_regimes(trades):
+
+    groups = {}
+
+    for trade in trades:
+
+        regime = get_market_condition(
+            trade
+        )
+
+        if regime not in groups:
+
+            groups[regime] = []
+
+        groups[regime].append(
+            trade
+        )
+
+    result = {}
+
+    for regime, group in groups.items():
+
+        result[regime] = calculate_stats(
+            group
+        )
+
+    return result
+
+
+# =========================================================
+# SCORE ANALYSIS
+# =========================================================
+
+def analyze_scores(trades):
+
+    # -----------------------------------------------------
+    # Tất cả score
+    # -----------------------------------------------------
+
+    score_groups = {}
+
+    unknown_score_trades = []
+
+    for trade in trades:
+
+        score = get_score(
+            trade
+        )
+
+        if score is None:
+
+            unknown_score_trades.append(
+                trade
+            )
+
+            continue
+
+        if score not in score_groups:
+
+            score_groups[score] = []
+
+        score_groups[score].append(
+            trade
+        )
+
+    # -----------------------------------------------------
+    # Overall score analysis
+    # -----------------------------------------------------
+
+    overall = {}
+
+    for score in sorted(
+        score_groups.keys()
+    ):
+
+        overall[str(score)] = calculate_stats(
+            score_groups[score]
+        )
+
+    # -----------------------------------------------------
+    # BUY score analysis
+    # -----------------------------------------------------
+
+    buy_score_groups = {}
+
+    for trade in trades:
+
+        signal = str(
+            trade.get(
+                "signal",
+                ""
+            )
+        ).upper()
+
+        if signal != "BUY":
+
+            continue
+
+        score = get_score(
+            trade
+        )
+
+        if score is None:
+
+            continue
+
+        if score not in buy_score_groups:
+
+            buy_score_groups[score] = []
+
+        buy_score_groups[score].append(
+            trade
+        )
+
+    buy_analysis = {}
+
+    for score in sorted(
+        buy_score_groups.keys()
+    ):
+
+        buy_analysis[str(score)] = calculate_stats(
+            buy_score_groups[score]
+        )
+
+    # -----------------------------------------------------
+    # SELL score analysis
+    # -----------------------------------------------------
+
+    sell_score_groups = {}
+
+    for trade in trades:
+
+        signal = str(
+            trade.get(
+                "signal",
+                ""
+            )
+        ).upper()
+
+        if signal != "SELL":
+
+            continue
+
+        score = get_score(
+            trade
+        )
+
+        if score is None:
+
+            continue
+
+        if score not in sell_score_groups:
+
+            sell_score_groups[score] = []
+
+        sell_score_groups[score].append(
+            trade
+        )
+
+    sell_analysis = {}
+
+    for score in sorted(
+        sell_score_groups.keys(),
+        reverse=True
+    ):
+
+        sell_analysis[str(score)] = calculate_stats(
+            sell_score_groups[score]
+        )
+
+    # -----------------------------------------------------
+    # Score + Regime
+    # -----------------------------------------------------
+
+    score_regime_groups = {}
+
+    for trade in trades:
+
+        score = get_score(
+            trade
+        )
+
+        if score is None:
+
+            continue
+
+        regime = get_market_condition(
+            trade
+        )
+
+        key = f"{regime}|{score}"
+
+        if key not in score_regime_groups:
+
+            score_regime_groups[key] = []
+
+        score_regime_groups[key].append(
+            trade
+        )
+
+    score_regime_analysis = {}
+
+    for key in sorted(
+        score_regime_groups.keys()
+    ):
+
+        score_regime_analysis[key] = calculate_stats(
+            score_regime_groups[key]
+        )
+
+    # -----------------------------------------------------
+    # Score data quality
+    # -----------------------------------------------------
+
+    known_scores = sum(
+        len(group)
+        for group in score_groups.values()
+    )
+
+    unknown_scores = len(
+        unknown_score_trades
+    )
+
+    return {
+
+        "overall": overall,
+
+        "BUY": buy_analysis,
+
+        "SELL": sell_analysis,
+
+        "by_regime_and_score": score_regime_analysis,
+
+        "data_quality": {
+
+            "trades_with_score": known_scores,
+
+            "trades_without_score": unknown_scores,
+
+            "score_coverage_pct": round(
+                (
+                    known_scores /
+                    len(trades) *
+                    100
+                )
+                if len(trades) > 0
+                else 0.0,
+                2
+            )
+        }
+    }
+
+
+# =========================================================
+# FEE ANALYSIS
+# =========================================================
+
+def analyze_fees(
+    summary,
+    trades
+):
+
+    profit_before_fees = safe_float(
+        summary.get(
+            "profit_before_fees"
+        ),
+        0.0
+    )
+
+    total_fees = safe_float(
+        summary.get(
+            "total_fees"
+        ),
+        0.0
+    )
+
+    profit_after_fees = safe_float(
+        summary.get(
+            "profit"
+        ),
+        0.0
+    )
+
+    return {
+
+        "profit_before_fees": round(
+            profit_before_fees,
+            4
+        ),
+
+        "total_fees": round(
+            total_fees,
+            4
+        ),
+
+        "profit_after_fees": round(
+            profit_after_fees,
+            4
+        ),
+
+        "fee_impact": round(
+            -total_fees,
+            4
+        )
+    }
+
+
+# =========================================================
+# FIND BEST / WORST REGIME
+# =========================================================
+
+def find_best_worst_regime(
+    regime_analysis
+):
+
+    valid = []
+
+    for regime, stats in regime_analysis.items():
+
+        if stats.get(
+            "trades",
+            0
+        ) <= 0:
+
+            continue
+
+        pf = stats.get(
+            "profit_factor"
+        )
+
+        profit = safe_float(
+            stats.get(
+                "profit"
+            ),
+            0.0
+        )
+
+        valid.append(
+            (
+                regime,
+                pf,
+                profit
+            )
+        )
+
+    if not valid:
+
+        return None, None
+
+    def score_item(item):
+
+        regime, pf, profit = item
+
+        if pf is None:
+
+            pf_value = 999999
+
+        else:
+
+            pf_value = safe_float(
+                pf,
+                0.0
+            )
+
+        return (
+            pf_value,
+            profit
+        )
+
+    best = max(
+        valid,
+        key=score_item
+    )
+
+    worst = min(
+        valid,
+        key=score_item
+    )
+
+    return best[0], worst[0]
+
+
+# =========================================================
+# FIND BEST / WORST SCORE
+# =========================================================
+
+def find_score_extremes(
+    score_analysis,
+    minimum_trades=3
+):
+
+    valid = []
+
+    for score_text, stats in score_analysis.items():
+
+        trades = safe_int(
+            stats.get(
+                "trades"
+            ),
+            0
+        )
+
+        if trades < minimum_trades:
+
+            continue
+
+        pf = stats.get(
+            "profit_factor"
+        )
+
+        profit = safe_float(
+            stats.get(
+                "profit"
+            ),
+            0.0
+        )
+
+        if pf is None:
+
+            pf_value = 999999.0
+
+        else:
+
+            pf_value = safe_float(
+                pf,
+                0.0
+            )
+
+        valid.append(
+            (
+                score_text,
+                pf_value,
+                profit,
+                trades
+            )
+        )
+
+    if not valid:
+
+        return None, None
+
+    best = max(
+        valid,
+        key=lambda x: (
+            x[1],
+            x[2]
+        )
+    )
+
+    worst = min(
+        valid,
+        key=lambda x: (
+            x[1],
+            x[2]
+        )
+    )
+
+    return best, worst
+
+
+# =========================================================
+# CONCLUSION
+# =========================================================
+
+def build_conclusion(
     summary,
     side_analysis,
     exit_analysis,
     regime_analysis,
+    score_analysis,
+    fee_analysis
 ):
+
     conclusions = []
 
-    profit_factor = _safe_float(
-        summary.get("profit_factor"),
-        0.0
+    # -----------------------------------------------------
+    # PF
+    # -----------------------------------------------------
+
+    pf = summary.get(
+        "profit_factor"
     )
 
-    return_pct = _safe_float(
-        summary.get("return_pct"),
-        0.0
-    )
+    if pf is not None:
 
-    max_dd_pct = _safe_float(
-        summary.get("max_drawdown_pct"),
-        0.0
-    )
+        if safe_float(
+            pf,
+            0.0
+        ) < 1:
 
-    # -----------------------------
-    # Profit Factor
-    # -----------------------------
+            conclusions.append(
+                "PF < 1: chiến lược đang có lợi thế âm trên giai đoạn này."
+            )
 
-    if profit_factor < 1:
-        conclusions.append(
-            "PF < 1: chiến lược đang có lợi thế âm trên giai đoạn này."
-        )
+        else:
 
-    elif profit_factor >= 1.2:
-        conclusions.append(
-            "PF >= 1.2: chiến lược có lợi thế tương đối tốt."
-        )
+            conclusions.append(
+                "PF >= 1: chiến lược có lợi thế dương trước khi xét các yếu tố khác."
+            )
 
-    else:
-        conclusions.append(
-            "PF từ 1.0 đến dưới 1.2: lợi thế còn khá yếu."
-        )
-
-    # -----------------------------
+    # -----------------------------------------------------
     # Return
-    # -----------------------------
+    # -----------------------------------------------------
+
+    return_pct = safe_float(
+        summary.get(
+            "return_pct"
+        ),
+        0.0
+    )
 
     if return_pct < 0:
+
         conclusions.append(
             "Return âm: chưa nên đưa Signal hiện tại sang Paper Trading."
         )
+
     else:
+
         conclusions.append(
-            "Return dương trên giai đoạn backtest."
+            "Return dương trên giai đoạn backtest này."
         )
 
-    # -----------------------------
+    # -----------------------------------------------------
     # Drawdown
-    # -----------------------------
+    # -----------------------------------------------------
 
-    if max_dd_pct >= 15:
-        conclusions.append(
-            "Drawdown >= 15%: rủi ro giảm vốn tương đối cao."
-        )
+    max_dd = safe_float(
+        summary.get(
+            "max_drawdown_pct"
+        ),
+        0.0
+    )
 
-    elif max_dd_pct >= 10:
+    if max_dd >= 10:
+
         conclusions.append(
             "Drawdown >= 10%: cần chú ý kiểm soát rủi ro."
         )
 
-    # -----------------------------
+    # -----------------------------------------------------
     # BUY vs SELL
-    # -----------------------------
+    # -----------------------------------------------------
 
-    buy = side_analysis.get("BUY", {})
-    sell = side_analysis.get("SELL", {})
+    buy = side_analysis.get(
+        "BUY",
+        empty_stats()
+    )
 
-    buy_pf = buy.get("profit_factor")
-    sell_pf = sell.get("profit_factor")
+    sell = side_analysis.get(
+        "SELL",
+        empty_stats()
+    )
 
-    if buy_pf is not None and sell_pf is not None:
+    buy_profit = safe_float(
+        buy.get(
+            "profit"
+        ),
+        0.0
+    )
 
-        if buy_pf > sell_pf:
-            conclusions.append(
-                "BUY đang có hiệu quả tốt hơn SELL."
-            )
+    sell_profit = safe_float(
+        sell.get(
+            "profit"
+        ),
+        0.0
+    )
 
-        elif sell_pf > buy_pf:
-            conclusions.append(
-                "SELL đang có hiệu quả tốt hơn BUY."
-            )
+    if buy_profit > sell_profit:
 
-        else:
-            conclusions.append(
-                "BUY và SELL có hiệu quả gần tương đương."
-            )
+        conclusions.append(
+            "BUY đang có hiệu quả tốt hơn SELL."
+        )
 
-    # -----------------------------
-    # Exit reason
-    # -----------------------------
+    elif sell_profit > buy_profit:
 
-    stop_loss = exit_analysis.get("STOP_LOSS", {})
-    take_profit = exit_analysis.get("TAKE_PROFIT", {})
+        conclusions.append(
+            "SELL đang có hiệu quả tốt hơn BUY."
+        )
 
-    sl_count = stop_loss.get("trades", 0)
-    tp_count = take_profit.get("trades", 0)
+    # -----------------------------------------------------
+    # Exit
+    # -----------------------------------------------------
 
-    if sl_count > tp_count:
+    stop_stats = exit_analysis.get(
+        "STOP_LOSS",
+        empty_stats()
+    )
+
+    tp_stats = exit_analysis.get(
+        "TAKE_PROFIT",
+        empty_stats()
+    )
+
+    stop_trades = safe_int(
+        stop_stats.get(
+            "trades"
+        ),
+        0
+    )
+
+    tp_trades = safe_int(
+        tp_stats.get(
+            "trades"
+        ),
+        0
+    )
+
+    if stop_trades > tp_trades:
+
         conclusions.append(
             "Số lệnh STOP_LOSS nhiều hơn TAKE_PROFIT."
         )
 
-    # -----------------------------
+    elif tp_trades > stop_trades:
+
+        conclusions.append(
+            "Số lệnh TAKE_PROFIT nhiều hơn STOP_LOSS."
+        )
+
+    # -----------------------------------------------------
     # Regime
-    # -----------------------------
+    # -----------------------------------------------------
 
-    best_regime = None
-    best_profit = None
-
-    worst_regime = None
-    worst_profit = None
-
-    for regime, stats in regime_analysis.items():
-
-        if regime == "UNKNOWN":
-            continue
-
-        profit = _safe_float(stats.get("profit"), 0.0)
-
-        if best_profit is None or profit > best_profit:
-            best_profit = profit
-            best_regime = regime
-
-        if worst_profit is None or profit < worst_profit:
-            worst_profit = profit
-            worst_regime = regime
+    best_regime, worst_regime = find_best_worst_regime(
+        regime_analysis
+    )
 
     if best_regime is not None:
+
         conclusions.append(
             f"Regime tốt nhất: {best_regime}."
         )
 
     if worst_regime is not None:
+
         conclusions.append(
             f"Regime yếu nhất: {worst_regime}."
+        )
+
+    # -----------------------------------------------------
+    # Fee
+    # -----------------------------------------------------
+
+    before_fee = safe_float(
+        fee_analysis.get(
+            "profit_before_fees"
+        ),
+        0.0
+    )
+
+    fees = safe_float(
+        fee_analysis.get(
+            "total_fees"
+        ),
+        0.0
+    )
+
+    after_fee = safe_float(
+        fee_analysis.get(
+            "profit_after_fees"
+        ),
+        0.0
+    )
+
+    if fees > 0 and before_fee > 0:
+
+        if fees > before_fee:
+
+            conclusions.append(
+                "Chi phí giao dịch lớn hơn lợi nhuận trước phí: fee đang ảnh hưởng rất mạnh."
+            )
+
+        elif after_fee < before_fee:
+
+            conclusions.append(
+                "Phí giao dịch làm giảm đáng kể lợi nhuận."
+            )
+
+    # -----------------------------------------------------
+    # Score analysis
+    # -----------------------------------------------------
+
+    sell_scores = score_analysis.get(
+        "SELL",
+        {}
+    )
+
+    buy_scores = score_analysis.get(
+        "BUY",
+        {}
+    )
+
+    best_sell, worst_sell = find_score_extremes(
+        sell_scores,
+        minimum_trades=3
+    )
+
+    best_buy, worst_buy = find_score_extremes(
+        buy_scores,
+        minimum_trades=3
+    )
+
+    if best_sell is not None:
+
+        conclusions.append(
+            "Diagnostic score: đã tìm được nhóm SELL có đủ mẫu để đánh giá."
+        )
+
+    if best_buy is not None:
+
+        conclusions.append(
+            "Diagnostic score: đã tìm được nhóm BUY có đủ mẫu để đánh giá."
+        )
+
+    # -----------------------------------------------------
+    # Score coverage
+    # -----------------------------------------------------
+
+    quality = score_analysis.get(
+        "data_quality",
+        {}
+    )
+
+    score_coverage = safe_float(
+        quality.get(
+            "score_coverage_pct"
+        ),
+        0.0
+    )
+
+    if score_coverage < 100:
+
+        conclusions.append(
+            f"Score coverage = {score_coverage:.2f}%: một số trade chưa có score."
+        )
+
+    else:
+
+        conclusions.append(
+            "Score coverage = 100%: toàn bộ trade đều có score."
         )
 
     return conclusions
 
 
-def run_diagnostic(backtest_result):
-    """
-    Chạy Backtest Diagnostic v1.0
+# =========================================================
+# MAIN DIAGNOSTIC
+# =========================================================
 
-    Input:
-        Kết quả trả về từ run_backtest()
+def run_diagnostic(
+    engine_result
+):
 
-    Output:
-        Dictionary JSON-safe.
-    """
+    if not isinstance(
+        engine_result,
+        dict
+    ):
 
-    summary = _find_summary(backtest_result)
-    debug = _find_debug(backtest_result)
-    trades = _find_trades(backtest_result)
+        return {
 
-    side_analysis = _analyze_side(trades)
+            "status": "error",
 
-    exit_analysis = _analyze_exit_reasons(trades)
+            "version": VERSION,
 
-    regime_analysis = _analyze_regime(trades)
+            "message": (
+                "engine_result phải là dict"
+            )
+        }
 
-    fee_analysis = _calculate_fee_impact(summary)
+    summary = engine_result.get(
+        "summary",
+        {}
+    )
 
-    conclusion = _generate_conclusion(
+    debug = engine_result.get(
+        "debug",
+        {}
+    )
+
+    trades = engine_result.get(
+        "trades",
+        []
+    )
+
+    if not isinstance(
+        trades,
+        list
+    ):
+
+        trades = []
+
+    # =====================================================
+    # ANALYSIS
+    # =====================================================
+
+    side_analysis = analyze_side(
+        trades
+    )
+
+    exit_analysis = analyze_exits(
+        trades
+    )
+
+    regime_analysis = analyze_regimes(
+        trades
+    )
+
+    score_analysis = analyze_scores(
+        trades
+    )
+
+    fee_analysis = analyze_fees(
         summary,
+        trades
+    )
+
+    # =====================================================
+    # SUMMARY
+    # =====================================================
+
+    diagnostic_summary = {
+
+        "initial_balance": summary.get(
+            "initial_balance",
+            0
+        ),
+
+        "final_balance": summary.get(
+            "final_balance",
+            0
+        ),
+
+        "profit": summary.get(
+            "profit",
+            0
+        ),
+
+        "return_pct": summary.get(
+            "return_pct",
+            0
+        ),
+
+        "total_trades": summary.get(
+            "total_trades",
+            len(trades)
+        ),
+
+        "win_rate": summary.get(
+            "win_rate",
+            0
+        ),
+
+        "profit_factor": summary.get(
+            "profit_factor"
+        ),
+
+        "max_drawdown_pct": summary.get(
+            "max_drawdown_pct",
+            0
+        )
+    }
+
+    # =====================================================
+    # CONCLUSION
+    # =====================================================
+
+    conclusion = build_conclusion(
+        diagnostic_summary,
         side_analysis,
         exit_analysis,
         regime_analysis,
+        score_analysis,
+        fee_analysis
     )
 
-    return {
+    # =====================================================
+    # RESULT
+    # =====================================================
+
+    result = {
+
         "status": "ok",
+
         "version": VERSION,
 
         "data": {
+
             "total_trades": len(trades),
-            "source_summary": bool(summary),
-            "source_trade_records": bool(trades),
+
+            "source_summary": bool(
+                summary
+            ),
+
+            "source_trade_records": bool(
+                trades
+            )
         },
 
-        "summary": {
-            "initial_balance": summary.get(
-                "initial_balance"
-            ),
-            "final_balance": summary.get(
-                "final_balance"
-            ),
-            "profit": summary.get(
-                "profit"
-            ),
-            "return_pct": summary.get(
-                "return_pct"
-            ),
-            "total_trades": summary.get(
-                "total_trades",
-                len(trades)
-            ),
-            "win_rate": summary.get(
-                "win_rate"
-            ),
-            "profit_factor": summary.get(
-                "profit_factor"
-            ),
-            "max_drawdown_pct": summary.get(
-                "max_drawdown_pct"
-            ),
-        },
+        "summary": diagnostic_summary,
 
         "side_analysis": side_analysis,
 
@@ -528,201 +1280,35 @@ def run_diagnostic(backtest_result):
 
         "regime_analysis": regime_analysis,
 
+        "score_analysis": score_analysis,
+
         "fee_analysis": fee_analysis,
 
         "engine_debug": debug,
 
-        "conclusion": conclusion,
+        "conclusion": conclusion
     }
 
-
-def print_diagnostic(report):
-    """
-    In kết quả Diagnostic dễ đọc trên terminal.
-    """
-
-    print()
-    print("=" * 70)
-    print("BACKTEST DIAGNOSTIC v1.0")
-    print("=" * 70)
-
-    summary = report.get("summary", {})
-
-    print()
-    print("1. TỔNG QUAN")
-    print("-" * 70)
-
-    print(
-        f"Initial Balance : "
-        f"{summary.get('initial_balance')}"
+    return native(
+        result
     )
 
-    print(
-        f"Final Balance   : "
-        f"{summary.get('final_balance')}"
-    )
 
-    print(
-        f"Profit          : "
-        f"{summary.get('profit')}"
-    )
-
-    print(
-        f"Return %        : "
-        f"{summary.get('return_pct')}"
-    )
-
-    print(
-        f"Trades          : "
-        f"{summary.get('total_trades')}"
-    )
-
-    print(
-        f"Win Rate        : "
-        f"{summary.get('win_rate')}"
-    )
-
-    print(
-        f"Profit Factor   : "
-        f"{summary.get('profit_factor')}"
-    )
-
-    print(
-        f"Max Drawdown %  : "
-        f"{summary.get('max_drawdown_pct')}"
-    )
-
-    print()
-    print("2. BUY / SELL")
-    print("-" * 70)
-
-    for side, stats in report.get(
-        "side_analysis", {}
-    ).items():
-
-        print(f"\n{side}")
-
-        print(
-            f"  Trades       : {stats['trades']}"
-        )
-
-        print(
-            f"  Wins         : {stats['wins']}"
-        )
-
-        print(
-            f"  Losses       : {stats['losses']}"
-        )
-
-        print(
-            f"  Win Rate     : {stats['win_rate']}%"
-        )
-
-        print(
-            f"  Profit       : {stats['profit']}"
-        )
-
-        print(
-            f"  Profit Factor: {stats['profit_factor']}"
-        )
-
-    print()
-    print("3. EXIT REASON")
-    print("-" * 70)
-
-    for reason, stats in report.get(
-        "exit_analysis", {}
-    ).items():
-
-        print(f"\n{reason}")
-
-        print(
-            f"  Trades   : {stats['trades']}"
-        )
-
-        print(
-            f"  Wins     : {stats['wins']}"
-        )
-
-        print(
-            f"  Losses   : {stats['losses']}"
-        )
-
-        print(
-            f"  Profit   : {stats['profit']}"
-        )
-
-    print()
-    print("4. MARKET REGIME")
-    print("-" * 70)
-
-    for regime, stats in report.get(
-        "regime_analysis", {}
-    ).items():
-
-        print(f"\n{regime}")
-
-        print(
-            f"  Trades   : {stats['trades']}"
-        )
-
-        print(
-            f"  Win Rate : {stats['win_rate']}%"
-        )
-
-        print(
-            f"  Profit   : {stats['profit']}"
-        )
-
-        print(
-            f"  PF       : {stats['profit_factor']}"
-        )
-
-    print()
-    print("5. FEE IMPACT")
-    print("-" * 70)
-
-    fee = report.get("fee_analysis", {})
-
-    print(
-        f"Profit before fees : "
-        f"{fee.get('profit_before_fees')}"
-    )
-
-    print(
-        f"Total fees        : "
-        f"{fee.get('total_fees')}"
-    )
-
-    print(
-        f"Profit after fees  : "
-        f"{fee.get('profit_after_fees')}"
-    )
-
-    print()
-    print("6. KẾT LUẬN")
-    print("-" * 70)
-
-    for item in report.get("conclusion", []):
-        print(f"- {item}")
-
-    print()
-    print("=" * 70)
-    print("END BACKTEST DIAGNOSTIC")
-    print("=" * 70)
-
+# =========================================================
+# LOCAL TEST
+# =========================================================
 
 if __name__ == "__main__":
 
     print(
-        "Backtest Diagnostic v1.0"
+        "backtest_diagnostic.py"
     )
 
     print(
-        "File này là module phân tích."
+        "VERSION:",
+        VERSION
     )
 
     print(
-        "Hãy gọi run_diagnostic() "
-        "sau khi chạy run_backtest()."
+        "Diagnostic v1.2 = OK"
     )
