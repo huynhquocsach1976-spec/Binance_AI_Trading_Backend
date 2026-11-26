@@ -7,6 +7,7 @@ from ai_analyzer import analyze_market
 from backtest_engine import run_backtest
 from backtest_v12 import run_multi_backtest, build_summary, run_symbol_backtest
 from backtest_diagnostic import run_diagnostic
+from backtest_diagnostic_v14 import run_diagnostic_v14
 
 
 # ============================================================
@@ -16,7 +17,7 @@ from backtest_diagnostic import run_diagnostic
 app = FastAPI(
     title="Binance AI Trading Pro Backend",
     description="AI phân tích và backtest thị trường crypto",
-    version="1.2.0"
+    version="1.4.0"
 )
 
 
@@ -29,7 +30,7 @@ def root():
     return {
         "status": "ok",
         "message": "Binance AI Trading Pro Backend đang chạy!",
-        "version": "1.2.0",
+        "version": "1.4.0",
         "signal_version": "1.6.1",
         "time": datetime.now().isoformat()
     }
@@ -45,7 +46,8 @@ def health():
         "status": "ok",
         "message": "Backend đang hoạt động bình thường",
         "signal_version": "1.6.1",
-        "backtest_version": "1.2.0"
+        "backtest_version": "1.2.0",
+        "diagnostic_version": "1.4.0"
     }
 
 
@@ -463,6 +465,7 @@ def backtest_v12_symbol(
 
 # ============================================================
 # BACKTEST DIAGNOSTIC v1.0
+# Giữ endpoint cũ
 # ============================================================
 
 @app.get("/backtest-diagnostic/{symbol}")
@@ -509,7 +512,6 @@ def backtest_diagnostic(
         )
 
         if backtest_result.get("status") != "ok":
-
             return backtest_result
 
         # ----------------------------------------------------
@@ -522,7 +524,7 @@ def backtest_diagnostic(
         )
 
         # ----------------------------------------------------
-        # Diagnostic
+        # Diagnostic v1.0
         # ----------------------------------------------------
 
         diagnostic = run_diagnostic(
@@ -536,6 +538,107 @@ def backtest_diagnostic(
         return {
             "status": "ok",
             "version": "1.0.0",
+            "symbol": symbol,
+            "timeframe": "1h",
+            "candles": candles,
+            "actual_candles": backtest_result.get(
+                "actual_candles"
+            ),
+            "source": backtest_result.get(
+                "source"
+            ),
+            "strategy": "Signal v1.6.1",
+            "diagnostic": diagnostic
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "message": str(e)
+        }
+
+
+# ============================================================
+# BACKTEST DIAGNOSTIC v1.4
+# Hypothetical Trade Filter Analysis
+#
+# KHÔNG sửa Signal v1.6.1
+# KHÔNG sửa backtest_engine.py
+# ============================================================
+
+@app.get("/backtest-diagnostic-v14/{symbol}")
+def backtest_diagnostic_v14(
+    symbol: str,
+    candles: int = 2880,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001
+):
+
+    symbol = symbol.upper()
+
+    allowed_periods = [
+        720,
+        1440,
+        2160,
+        2880
+    ]
+
+    if candles not in allowed_periods:
+
+        return {
+            "status": "error",
+            "symbol": symbol,
+            "message": (
+                "candles phải là một trong: "
+                "720, 1440, 2160, 2880"
+            )
+        }
+
+    try:
+
+        # ----------------------------------------------------
+        # Chạy Backtest v1.2
+        # ----------------------------------------------------
+
+        backtest_result = run_symbol_backtest(
+            symbol=symbol,
+            candle_count=candles,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage
+        )
+
+        if backtest_result.get("status") != "ok":
+            return backtest_result
+
+        # ----------------------------------------------------
+        # Lấy kết quả của backtest_engine
+        # ----------------------------------------------------
+
+        engine_result = backtest_result.get(
+            "result",
+            {}
+        )
+
+        # ----------------------------------------------------
+        # Diagnostic v1.4
+        # ----------------------------------------------------
+
+        diagnostic = run_diagnostic_v14(
+            engine_result=engine_result,
+            initial_balance=initial_balance
+        )
+
+        # ----------------------------------------------------
+        # Return
+        # ----------------------------------------------------
+
+        return {
+            "status": "ok",
+            "version": "1.4.0",
             "symbol": symbol,
             "timeframe": "1h",
             "candles": candles,
