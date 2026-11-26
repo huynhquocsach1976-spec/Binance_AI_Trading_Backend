@@ -1,31 +1,75 @@
 from fastapi import FastAPI
 from datetime import datetime
 from pydantic import BaseModel
+
 import requests
 import os
 import csv
 
 from ai_analyzer import analyze_market
+
 from backtest_engine import run_backtest
+
 from backtest_v12 import (
     run_multi_backtest,
     build_summary,
-    run_symbol_backtest
+    run_symbol_backtest,
 )
+
 from backtest_diagnostic import run_diagnostic
-from backtest_diagnostic_v14 import run_diagnostic_v14
-from backtest_filtered_v15 import run_filtered_diagnostic_v15
+
+from backtest_diagnostic_v14 import (
+    run_diagnostic_v14,
+)
+
+from backtest_filtered_v15 import (
+    run_filtered_diagnostic_v15,
+)
+
+from backtest_parity_check_v15 import (
+    run_parity_check,
+)
 
 
 # ============================================================
-# FASTAPI
+# APP
 # ============================================================
 
 app = FastAPI(
-    title="Binance AI Trading Pro Backend",
-    description="AI phân tích và backtest thị trường crypto",
-    version="1.5.0"
+    title="Binance AI Trading Backend",
+    description="AI Trading Backend - Signal v1.6.1 / Backtest / Diagnostic / Parity",
+    version="1.5.0",
 )
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+PAIR_MAP = {
+    "BTCUSDT": "XBTUSD",
+    "ETHUSDT": "ETHUSD",
+    "SOLUSDT": "SOLUSD",
+}
+
+KRAKEN_OHLC_URL = (
+    "https://api.kraken.com/0/public/OHLC"
+)
+
+ALLOWED_CANDLES = [
+    720,
+    1440,
+    2160,
+    2880,
+]
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
+class AnalyzeRequest(BaseModel):
+    symbol: str = "BTCUSDT"
 
 
 # ============================================================
@@ -34,12 +78,13 @@ app = FastAPI(
 
 @app.get("/")
 def root():
+
     return {
         "status": "ok",
-        "message": "Binance AI Trading Pro Backend đang chạy!",
+        "message": "Binance AI Trading Backend đang chạy!",
         "version": "1.5.0",
-        "signal_version": "1.6.1",
-        "time": datetime.now().isoformat()
+        "strategy": "Signal v1.6.1",
+        "docs": "/docs",
     }
 
 
@@ -49,13 +94,12 @@ def root():
 
 @app.get("/health")
 def health():
+
     return {
         "status": "ok",
-        "message": "Backend đang hoạt động bình thường",
-        "signal_version": "1.6.1",
-        "backtest_version": "1.2.0",
-        "diagnostic_version": "1.4.0",
-        "filtered_backtest_version": "1.5.0"
+        "version": "1.5.0",
+        "message": "Backend hoạt động bình thường",
+        "time": datetime.utcnow().isoformat(),
     }
 
 
@@ -68,68 +112,75 @@ def get_price(symbol: str):
 
     symbol = symbol.upper()
 
-    pair_map = {
-        "BTCUSDT": "XBTUSD",
-        "ETHUSDT": "ETHUSD",
-        "SOLUSDT": "SOLUSD"
-    }
-
-    if symbol not in pair_map:
+    if symbol not in PAIR_MAP:
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": "Symbol chưa được hỗ trợ"
+            "message": (
+                f"Symbol không hỗ trợ: {symbol}. "
+                f"Hỗ trợ: {list(PAIR_MAP.keys())}"
+            ),
         }
 
-    pair = pair_map[symbol]
-
-    url = "https://api.kraken.com/0/public/Ticker"
+    pair = PAIR_MAP[symbol]
 
     try:
 
         response = requests.get(
-            url,
+            KRAKEN_OHLC_URL,
             params={
-                "pair": pair
+                "pair": pair,
+                "interval": 60,
             },
-            timeout=15
+            timeout=20,
         )
 
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "symbol": symbol,
-                "message": response.text
-            }
+        response.raise_for_status()
 
         data = response.json()
 
         if data.get("error"):
             return {
                 "status": "error",
-                "symbol": symbol,
-                "message": data["error"]
+                "message": data["error"],
             }
 
-        result = data["result"]
+        result = data.get("result", {})
 
-        ticker = next(iter(result.values()))
+        pair_key = None
 
-        price = float(ticker["c"][0])
+        for key in result.keys():
+            if key != "last":
+                pair_key = key
+                break
+
+        if not pair_key:
+            return {
+                "status": "error",
+                "message": "Không tìm thấy dữ liệu Kraken.",
+            }
+
+        rows = result[pair_key]
+
+        if not rows:
+            return {
+                "status": "error",
+                "message": "Không có dữ liệu.",
+            }
+
+        row = rows[-1]
 
         return {
             "status": "ok",
             "symbol": symbol,
-            "price": price,
-            "source": "Kraken"
+            "price": float(row[4]),
+            "time": int(float(row[0])),
         }
 
     except Exception as e:
 
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": str(e)
+            "message": str(e),
         }
 
 
@@ -138,121 +189,122 @@ def get_price(symbol: str):
 # ============================================================
 
 @app.get("/history/{symbol}")
-def get_history(symbol: str):
+def get_history(
+    symbol: str,
+    candles: int = 720,
+):
 
     symbol = symbol.upper()
 
-    pair_map = {
-        "BTCUSDT": "XBTUSD",
-        "ETHUSDT": "ETHUSD",
-        "SOLUSDT": "SOLUSD"
-    }
-
-    if symbol not in pair_map:
+    if symbol not in PAIR_MAP:
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": "Symbol chưa được hỗ trợ"
+            "message": (
+                f"Symbol không hỗ trợ: {symbol}"
+            ),
         }
 
-    pair = pair_map[symbol]
+    if candles not in ALLOWED_CANDLES:
+        return {
+            "status": "error",
+            "message": (
+                f"candles phải là một trong: "
+                f"{ALLOWED_CANDLES}"
+            ),
+        }
 
-    url = "https://api.kraken.com/0/public/OHLC"
+    pair = PAIR_MAP[symbol]
 
     try:
 
         response = requests.get(
-            url,
+            KRAKEN_OHLC_URL,
             params={
                 "pair": pair,
-                "interval": 60
+                "interval": 60,
             },
-            timeout=15
+            timeout=30,
         )
 
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "symbol": symbol,
-                "message": response.text
-            }
+        response.raise_for_status()
 
         data = response.json()
 
         if data.get("error"):
             return {
                 "status": "error",
-                "symbol": symbol,
-                "message": data["error"]
+                "message": data["error"],
             }
 
-        result = data["result"]
+        result = data.get("result", {})
 
-        candles = next(
-            value
-            for key, value in result.items()
-            if key != "last"
-        )
+        pair_key = None
 
-        candles = candles[-100:]
+        for key in result.keys():
+            if key != "last":
+                pair_key = key
+                break
 
-        history = []
+        if not pair_key:
+            return {
+                "status": "error",
+                "message": "Không tìm thấy dữ liệu.",
+            }
 
-        for candle in candles:
+        rows = result[pair_key]
 
-            history.append({
-                "time": int(candle[0]),
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "vwap": float(candle[5]),
-                "volume": float(candle[6]),
-                "trades": int(candle[7])
-            })
+        rows = rows[-candles:]
+
+        output = []
+
+        for row in rows:
+
+            if len(row) < 8:
+                continue
+
+            output.append(
+                {
+                    "time": int(float(row[0])),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "vwap": float(row[5]),
+                    "volume": float(row[6]),
+                    "trades": int(float(row[7])),
+                }
+            )
 
         return {
             "status": "ok",
             "symbol": symbol,
-            "interval": "1h",
-            "count": len(history),
-            "data": history,
-            "source": "Kraken"
+            "timeframe": "1h",
+            "candles": len(output),
+            "data": output,
         }
 
     except Exception as e:
 
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": str(e)
+            "message": str(e),
         }
 
 
 # ============================================================
 # AI ANALYZE
-# Signal v1.6.1
 # ============================================================
-
-class AnalyzeRequest(BaseModel):
-
-    data: list
-
 
 @app.post("/ai/analyze")
 def ai_analyze(request: AnalyzeRequest):
 
+    symbol = request.symbol.upper()
+
     try:
 
-        candles = request.data
-
-        if len(candles) < 50:
-            return {
-                "status": "error",
-                "message": "Cần ít nhất 50 candles"
-            }
-
-        result = analyze_market(candles)
+        result = analyze_market(
+            symbol
+        )
 
         return result
 
@@ -260,269 +312,43 @@ def ai_analyze(request: AnalyzeRequest):
 
         return {
             "status": "error",
-            "message": str(e)
+            "message": str(e),
         }
 
 
 # ============================================================
-# BACKTEST v1.1
+# BACKTEST ORIGINAL
 # ============================================================
 
 @app.get("/backtest/{symbol}")
-def backtest_symbol(
-    symbol: str,
-    initial_balance: float = 1000.0,
-    fee_rate: float = 0.0004,
-    slippage: float = 0.0001
-):
-
-    symbol = symbol.upper()
-
-    pair_map = {
-        "BTCUSDT": "XBTUSD",
-        "ETHUSDT": "ETHUSD",
-        "SOLUSDT": "SOLUSD"
-    }
-
-    if symbol not in pair_map:
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "message": "Symbol chưa được hỗ trợ"
-        }
-
-    pair = pair_map[symbol]
-
-    url = "https://api.kraken.com/0/public/OHLC"
-
-    try:
-
-        response = requests.get(
-            url,
-            params={
-                "pair": pair,
-                "interval": 60
-            },
-            timeout=15
-        )
-
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "symbol": symbol,
-                "message": response.text
-            }
-
-        data = response.json()
-
-        if data.get("error"):
-            return {
-                "status": "error",
-                "symbol": symbol,
-                "message": data["error"]
-            }
-
-        result = data["result"]
-
-        candles = next(
-            value
-            for key, value in result.items()
-            if key != "last"
-        )
-
-        candles = candles[-720:]
-
-        history = []
-
-        for candle in candles:
-
-            history.append({
-                "time": int(candle[0]),
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "vwap": float(candle[5]),
-                "volume": float(candle[6]),
-                "trades": int(candle[7])
-            })
-
-        backtest_result = run_backtest(
-            history,
-            initial_balance=initial_balance,
-            fee_rate=fee_rate,
-            slippage=slippage
-        )
-
-        backtest_result["symbol"] = symbol
-        backtest_result["timeframe"] = "1h"
-        backtest_result["candle_count"] = len(history)
-        backtest_result["source"] = "Kraken"
-
-        return backtest_result
-
-    except Exception as e:
-
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "message": str(e)
-        }
-
-
-# ============================================================
-# BACKTEST v1.2
-# MULTI-SYMBOL + MULTI-PERIOD
-# ============================================================
-
-@app.get("/backtest-all")
-def backtest_all(
-    initial_balance: float = 1000.0,
-    fee_rate: float = 0.0004,
-    slippage: float = 0.0001
-):
-
-    try:
-
-        result = run_multi_backtest(
-            symbols=[
-                "BTCUSDT",
-                "ETHUSDT",
-                "SOLUSDT"
-            ],
-            periods=[
-                720,
-                1440,
-                2160,
-                2880
-            ],
-            initial_balance=initial_balance,
-            fee_rate=fee_rate,
-            slippage=slippage
-        )
-
-        result["summary"] = build_summary(
-            result["results"]
-        )
-
-        return result
-
-    except Exception as e:
-
-        return {
-            "status": "error",
-            "version": "1.2.0",
-            "message": str(e)
-        }
-
-
-# ============================================================
-# BACKTEST v1.2 - 1 SYMBOL
-# ============================================================
-
-@app.get("/backtest-v12/{symbol}")
-def backtest_v12_symbol(
+def backtest(
     symbol: str,
     candles: int = 720,
     initial_balance: float = 1000.0,
     fee_rate: float = 0.0004,
-    slippage: float = 0.0001
+    slippage: float = 0.0001,
 ):
 
     symbol = symbol.upper()
 
-    allowed_periods = [
-        720,
-        1440,
-        2160,
-        2880
-    ]
-
-    if candles not in allowed_periods:
-
+    if symbol not in PAIR_MAP:
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": (
-                "candles phải là một trong: "
-                "720, 1440, 2160, 2880"
-            )
+            "message": f"Symbol không hỗ trợ: {symbol}",
         }
 
     try:
 
-        result = run_symbol_backtest(
-            symbol=symbol,
-            candle_count=candles,
+        data = get_backtest_candles(
+            symbol,
+            candles,
+        )
+
+        result = run_backtest(
+            data,
             initial_balance=initial_balance,
             fee_rate=fee_rate,
-            slippage=slippage
-        )
-
-        return result
-
-    except Exception as e:
-
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "message": str(e)
-        }
-
-
-# ============================================================
-# BACKTEST DIAGNOSTIC v1.0
-# ============================================================
-
-@app.get("/backtest-diagnostic/{symbol}")
-def backtest_diagnostic(
-    symbol: str,
-    candles: int = 2880,
-    initial_balance: float = 1000.0,
-    fee_rate: float = 0.0004,
-    slippage: float = 0.0001
-):
-
-    symbol = symbol.upper()
-
-    allowed_periods = [
-        720,
-        1440,
-        2160,
-        2880
-    ]
-
-    if candles not in allowed_periods:
-
-        return {
-            "status": "error",
-            "symbol": symbol,
-            "message": (
-                "candles phải là một trong: "
-                "720, 1440, 2160, 2880"
-            )
-        }
-
-    try:
-
-        backtest_result = run_symbol_backtest(
-            symbol=symbol,
-            candle_count=candles,
-            initial_balance=initial_balance,
-            fee_rate=fee_rate,
-            slippage=slippage
-        )
-
-        if backtest_result.get("status") != "ok":
-            return backtest_result
-
-        engine_result = backtest_result.get(
-            "result",
-            {}
-        )
-
-        diagnostic = run_diagnostic(
-            engine_result
+            slippage=slippage,
         )
 
         return {
@@ -531,27 +357,161 @@ def backtest_diagnostic(
             "symbol": symbol,
             "timeframe": "1h",
             "candles": candles,
-            "actual_candles": backtest_result.get(
-                "actual_candles"
-            ),
-            "source": backtest_result.get(
-                "source"
+            "actual_candles": len(data),
+            "source": (
+                "Kraken"
+                if candles == 720
+                else "local_csv"
             ),
             "strategy": "Signal v1.6.1",
-            "diagnostic": diagnostic
+            "result": result,
         }
 
     except Exception as e:
 
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": str(e)
+            "message": str(e),
         }
 
 
 # ============================================================
-# BACKTEST DIAGNOSTIC v1.4
+# BACKTEST V12
+# ============================================================
+
+@app.get("/backtest-v12/{symbol}")
+def backtest_v12(
+    symbol: str,
+    candles: int = 720,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001,
+):
+
+    symbol = symbol.upper()
+
+    if symbol not in PAIR_MAP:
+        return {
+            "status": "error",
+            "message": f"Symbol không hỗ trợ: {symbol}",
+        }
+
+    if candles not in ALLOWED_CANDLES:
+        return {
+            "status": "error",
+            "message": (
+                f"candles phải là một trong "
+                f"{ALLOWED_CANDLES}"
+            ),
+        }
+
+    try:
+
+        result = run_symbol_backtest(
+            symbol=symbol,
+            candles=candles,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage,
+        )
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# ============================================================
+# BACKTEST ALL
+# ============================================================
+
+@app.get("/backtest-all")
+def backtest_all(
+    candles: int = 720,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001,
+):
+
+    try:
+
+        result = run_multi_backtest(
+            candles=candles,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage,
+        )
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# ============================================================
+# BACKTEST DIAGNOSTIC
+# ============================================================
+
+@app.get("/backtest-diagnostic/{symbol}")
+def backtest_diagnostic(
+    symbol: str,
+    candles: int = 2880,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001,
+):
+
+    symbol = symbol.upper()
+
+    if symbol not in PAIR_MAP:
+        return {
+            "status": "error",
+            "message": f"Symbol không hỗ trợ: {symbol}",
+        }
+
+    try:
+
+        data = get_backtest_candles(
+            symbol,
+            candles,
+        )
+
+        result = run_diagnostic(
+            data,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage,
+        )
+
+        return {
+            "status": "ok",
+            "version": "1.0.0",
+            "symbol": symbol,
+            "timeframe": "1h",
+            "candles": candles,
+            "actual_candles": len(data),
+            "strategy": "Signal v1.6.1",
+            "diagnostic": result,
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# ============================================================
+# BACKTEST DIAGNOSTIC V14
 # ============================================================
 
 @app.get("/backtest-diagnostic-v14/{symbol}")
@@ -560,50 +520,29 @@ def backtest_diagnostic_v14(
     candles: int = 2880,
     initial_balance: float = 1000.0,
     fee_rate: float = 0.0004,
-    slippage: float = 0.0001
+    slippage: float = 0.0001,
 ):
 
     symbol = symbol.upper()
 
-    allowed_periods = [
-        720,
-        1440,
-        2160,
-        2880
-    ]
-
-    if candles not in allowed_periods:
-
+    if symbol not in PAIR_MAP:
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": (
-                "candles phải là một trong: "
-                "720, 1440, 2160, 2880"
-            )
+            "message": f"Symbol không hỗ trợ: {symbol}",
         }
 
     try:
 
-        backtest_result = run_symbol_backtest(
-            symbol=symbol,
-            candle_count=candles,
+        data = get_backtest_candles(
+            symbol,
+            candles,
+        )
+
+        result = run_diagnostic_v14(
+            data,
             initial_balance=initial_balance,
             fee_rate=fee_rate,
-            slippage=slippage
-        )
-
-        if backtest_result.get("status") != "ok":
-            return backtest_result
-
-        engine_result = backtest_result.get(
-            "result",
-            {}
-        )
-
-        diagnostic = run_diagnostic_v14(
-            engine_result=engine_result,
-            initial_balance=initial_balance
+            slippage=slippage,
         )
 
         return {
@@ -612,67 +551,56 @@ def backtest_diagnostic_v14(
             "symbol": symbol,
             "timeframe": "1h",
             "candles": candles,
-            "actual_candles": backtest_result.get(
-                "actual_candles"
-            ),
-            "source": backtest_result.get(
-                "source"
-            ),
+            "actual_candles": len(data),
             "strategy": "Signal v1.6.1",
-            "diagnostic": diagnostic
+            "diagnostic": result,
         }
 
     except Exception as e:
 
         return {
             "status": "error",
-            "symbol": symbol,
-            "message": str(e)
+            "message": str(e),
         }
 
 
 # ============================================================
-# HELPER:
-# LOAD HISTORICAL CANDLES FOR FILTERED BACKTEST v1.5
+# LOAD FILTERED CANDLES
 # ============================================================
 
 def load_filtered_candles(
     symbol: str,
-    candles_count: int
+    candles_count: int,
 ):
 
     symbol = symbol.upper()
 
-    pair_map = {
-        "BTCUSDT": "XBTUSD",
-        "ETHUSDT": "ETHUSD",
-        "SOLUSDT": "SOLUSD"
-    }
-
-    if symbol not in pair_map:
-
+    if symbol not in PAIR_MAP:
         raise ValueError(
-            "Symbol chưa được hỗ trợ"
+            f"Symbol không hỗ trợ: {symbol}"
         )
 
-    pair = pair_map[symbol]
+    if candles_count not in ALLOWED_CANDLES:
+        raise ValueError(
+            f"candles phải là một trong: "
+            f"{ALLOWED_CANDLES}"
+        )
 
-    # --------------------------------------------------------
-    # 720 candles:
-    # Lấy trực tiếp Kraken
-    # --------------------------------------------------------
+    pair = PAIR_MAP[symbol]
+
+    # ========================================================
+    # 720 -> KRAKEN
+    # ========================================================
 
     if candles_count == 720:
 
-        url = "https://api.kraken.com/0/public/OHLC"
-
         response = requests.get(
-            url,
+            KRAKEN_OHLC_URL,
             params={
                 "pair": pair,
-                "interval": 60
+                "interval": 60,
             },
-            timeout=30
+            timeout=30,
         )
 
         response.raise_for_status()
@@ -680,276 +608,255 @@ def load_filtered_candles(
         data = response.json()
 
         if data.get("error"):
-            raise ValueError(
-                str(data["error"])
+            raise RuntimeError(
+                f"Kraken API error: {data['error']}"
             )
 
-        result = data["result"]
+        result = data.get("result", {})
 
-        raw_candles = next(
-            value
-            for key, value in result.items()
-            if key != "last"
-        )
+        pair_key = None
 
-        raw_candles = raw_candles[-720:]
+        for key in result.keys():
+            if key != "last":
+                pair_key = key
+                break
 
-        history = []
+        if not pair_key:
+            raise RuntimeError(
+                "Không tìm thấy pair data từ Kraken."
+            )
 
-        for candle in raw_candles:
+        rows = result[pair_key]
 
-            history.append({
-                "time": int(candle[0]),
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "vwap": float(candle[5]),
-                "volume": float(candle[6]),
-                "trades": int(candle[7])
-            })
+        rows = rows[-candles_count:]
 
-        return history
+        output = []
 
-    # --------------------------------------------------------
-    # >720:
-    # Local historical CSV
-    # --------------------------------------------------------
+        for row in rows:
 
-    filename = f"{pair}_60.csv"
+            if len(row) < 8:
+                continue
+
+            output.append(
+                {
+                    "time": int(float(row[0])),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "vwap": float(row[5]),
+                    "volume": float(row[6]),
+                    "trades": int(float(row[7])),
+                }
+            )
+
+        if len(output) < candles_count:
+            raise RuntimeError(
+                f"Kraken chỉ có {len(output)} candles, "
+                f"cần {candles_count}."
+            )
+
+        return output[-candles_count:]
+
+    # ========================================================
+    # >720 -> LOCAL CSV
+    # ========================================================
 
     csv_path = os.path.join(
-        os.path.dirname(__file__),
         "historical",
-        filename
+        f"{pair}_60.csv",
     )
 
     if not os.path.exists(csv_path):
-
         raise FileNotFoundError(
-            f"Không tìm thấy file lịch sử: {csv_path}"
+            f"Không tìm thấy file: {csv_path}"
         )
 
-    rows = []
+    output = []
 
     with open(
         csv_path,
         "r",
-        encoding="utf-8"
+        encoding="utf-8",
+        newline="",
     ) as f:
 
         reader = csv.DictReader(f)
 
-        if reader.fieldnames is None:
-            raise ValueError(
-                "CSV không có header"
+        if not reader.fieldnames:
+            raise RuntimeError(
+                f"CSV không có header: {csv_path}"
             )
 
-        fields = {
-            str(x).strip().lower(): x
-            for x in reader.fieldnames
+        headers = {
+            h.strip().lower(): h
+            for h in reader.fieldnames
+            if h
         }
 
-        def find_field(*names):
+        def get_column(row, names):
 
             for name in names:
 
-                if name in fields:
-                    return fields[name]
+                if name in headers:
+                    value = row.get(
+                        headers[name]
+                    )
+
+                    if value not in [
+                        None,
+                        "",
+                    ]:
+                        return value
 
             return None
 
-        time_field = find_field(
-            "time",
-            "timestamp",
-            "ts",
-            "date"
-        )
-
-        open_field = find_field(
-            "open"
-        )
-
-        high_field = find_field(
-            "high"
-        )
-
-        low_field = find_field(
-            "low"
-        )
-
-        close_field = find_field(
-            "close"
-        )
-
-        vwap_field = find_field(
-            "vwap"
-        )
-
-        volume_field = find_field(
-            "volume",
-            "vol"
-        )
-
-        trades_field = find_field(
-            "trades",
-            "count"
-        )
-
-        required = [
-            open_field,
-            high_field,
-            low_field,
-            close_field,
-            volume_field
-        ]
-
-        if any(
-            field is None
-            for field in required
-        ):
-
-            raise ValueError(
-                "CSV thiếu một trong các cột "
-                "open/high/low/close/volume"
-            )
-
         for row in reader:
 
-            try:
+            timestamp = get_column(
+                row,
+                [
+                    "time",
+                    "timestamp",
+                    "ts",
+                    "date",
+                ],
+            )
 
-                candle = {
-                    "time": (
-                        int(
-                            float(
-                                row[time_field]
-                            )
-                        )
-                        if time_field
-                        else 0
-                    ),
+            open_price = get_column(
+                row,
+                ["open"],
+            )
 
-                    "open": float(
-                        row[open_field]
-                    ),
+            high_price = get_column(
+                row,
+                ["high"],
+            )
 
-                    "high": float(
-                        row[high_field]
-                    ),
+            low_price = get_column(
+                row,
+                ["low"],
+            )
 
-                    "low": float(
-                        row[low_field]
-                    ),
+            close_price = get_column(
+                row,
+                ["close"],
+            )
 
-                    "close": float(
-                        row[close_field]
-                    ),
+            vwap = get_column(
+                row,
+                ["vwap"],
+            )
 
-                    "vwap": (
-                        float(
-                            row[vwap_field]
-                        )
-                        if vwap_field
-                        and row[vwap_field] != ""
-                        else float(
-                            row[close_field]
-                        )
-                    ),
+            volume = get_column(
+                row,
+                ["volume"],
+            )
 
-                    "volume": float(
-                        row[volume_field]
-                    ),
+            trades = get_column(
+                row,
+                [
+                    "trades",
+                    "count",
+                ],
+            )
 
-                    "trades": (
-                        int(
-                            float(
-                                row[trades_field]
-                            )
-                        )
-                        if trades_field
-                        and row[trades_field] != ""
-                        else 0
-                    )
-                }
-
-                rows.append(candle)
-
-            except Exception:
+            if (
+                open_price is None
+                or high_price is None
+                or low_price is None
+                or close_price is None
+                or volume is None
+            ):
                 continue
 
-    if len(rows) < candles_count:
+            if vwap is None:
+                vwap = close_price
 
-        raise ValueError(
-            f"CSV chỉ có {len(rows)} candles, "
+            if trades is None:
+                trades = 0
+
+            output.append(
+                {
+                    "time": int(float(timestamp))
+                    if timestamp is not None
+                    else 0,
+                    "open": float(open_price),
+                    "high": float(high_price),
+                    "low": float(low_price),
+                    "close": float(close_price),
+                    "vwap": float(vwap),
+                    "volume": float(volume),
+                    "trades": int(float(trades)),
+                }
+            )
+
+    if len(output) < candles_count:
+        raise RuntimeError(
+            f"CSV chỉ có {len(output)} candles, "
             f"cần {candles_count} candles"
         )
 
-    # Giống Backtest v1.2:
-    # lấy candles cuối cùng
-    rows = rows[-candles_count:]
-
-    return rows
+    return output[-candles_count:]
 
 
 # ============================================================
-# BACKTEST FILTERED v1.5
-# TRUE COMPOUNDING
+# BACKTEST CANDLE HELPER
+# ============================================================
+
+def get_backtest_candles(
+    symbol: str,
+    candles: int,
+):
+
+    return load_filtered_candles(
+        symbol,
+        candles,
+    )
+
+
+# ============================================================
+# FILTERED BACKTEST V15
 # ============================================================
 
 @app.get("/backtest-filtered-v15/{symbol}")
 def backtest_filtered_v15(
     symbol: str,
-    candles: int = 2880,
+    candles: int = 720,
     initial_balance: float = 1000.0,
     fee_rate: float = 0.0004,
-    slippage: float = 0.0001
+    slippage: float = 0.0001,
 ):
 
     symbol = symbol.upper()
 
-    allowed_periods = [
-        720,
-        1440,
-        2160,
-        2880
-    ]
-
-    if candles not in allowed_periods:
-
+    if symbol not in PAIR_MAP:
         return {
             "status": "error",
-            "version": "1.5.0",
-            "symbol": symbol,
+            "message": f"Symbol không hỗ trợ: {symbol}",
+        }
+
+    if candles not in ALLOWED_CANDLES:
+        return {
+            "status": "error",
             "message": (
-                "candles phải là một trong: "
-                "720, 1440, 2160, 2880"
-            )
+                f"candles phải là một trong "
+                f"{ALLOWED_CANDLES}"
+            ),
         }
 
     try:
 
-        # ----------------------------------------------------
-        # Load đúng dữ liệu lịch sử
-        # ----------------------------------------------------
-
-        candles_data = load_filtered_candles(
-            symbol=symbol,
-            candles_count=candles
+        data = load_filtered_candles(
+            symbol,
+            candles,
         )
 
-        actual_candles = len(
-            candles_data
-        )
-
-        # ----------------------------------------------------
-        # Chạy TRUE filtered backtest
-        # ----------------------------------------------------
-
-        diagnostic = run_filtered_diagnostic_v15(
-            candles=candles_data,
+        result = run_filtered_diagnostic_v15(
+            data,
             initial_balance=initial_balance,
             fee_rate=fee_rate,
-            slippage=slippage
+            slippage=slippage,
         )
 
         return {
@@ -958,21 +865,119 @@ def backtest_filtered_v15(
             "symbol": symbol,
             "timeframe": "1h",
             "candles": candles,
-            "actual_candles": actual_candles,
+            "actual_candles": len(data),
             "source": (
                 "Kraken"
                 if candles == 720
                 else "local_csv"
             ),
             "strategy": "Signal v1.6.1",
-            "backtest": diagnostic
+            "backtest": result,
         }
 
     except Exception as e:
 
         return {
             "status": "error",
+            "message": str(e),
+        }
+
+
+# ============================================================
+# ⭐ BACKTEST PARITY CHECK V15
+# ============================================================
+
+@app.get("/backtest-parity-v15/{symbol}")
+def backtest_parity_v15(
+    symbol: str,
+    candles: int = 720,
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001,
+):
+
+    """
+    So sánh:
+
+    backtest_engine.py
+
+    VS
+
+    backtest_filtered_v15.py BASELINE
+
+    Hai engine nhận CHÍNH XÁC cùng một bộ candles.
+
+    Mục tiêu:
+    xác định Filtered Backtest v1.5 có parity
+    với backtest_engine.py hay không.
+    """
+
+    symbol = symbol.upper()
+
+    if symbol not in PAIR_MAP:
+        return {
+            "status": "error",
+            "message": f"Symbol không hỗ trợ: {symbol}",
+        }
+
+    if candles != 720:
+        return {
+            "status": "error",
+            "message": (
+                "Parity Check v1.5 hiện chỉ chạy "
+                "với chính xác 720 candles."
+            ),
+        }
+
+    try:
+
+        # ====================================================
+        # QUAN TRỌNG:
+        # CHỈ LOAD DATA MỘT LẦN.
+        #
+        # Cả hai engine dùng cùng data.
+        # ====================================================
+
+        data = load_filtered_candles(
+            symbol,
+            candles,
+        )
+
+        if len(data) != candles:
+            return {
+                "status": "error",
+                "message": (
+                    f"Actual candles = {len(data)}, "
+                    f"expected = {candles}"
+                ),
+            }
+
+        # ====================================================
+        # PARITY
+        # ====================================================
+
+        result = run_parity_check(
+            data,
+            initial_balance=initial_balance,
+            fee_rate=fee_rate,
+            slippage=slippage,
+        )
+
+        return {
+            "status": "ok",
             "version": "1.5.0",
             "symbol": symbol,
-            "message": str(e)
+            "timeframe": "1h",
+            "candles": candles,
+            "actual_candles": len(data),
+            "source": "Kraken",
+            "strategy": "Signal v1.6.1",
+            "backtest_parity": result,
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e),
         }
