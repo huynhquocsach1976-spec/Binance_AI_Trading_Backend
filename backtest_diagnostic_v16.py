@@ -5,7 +5,7 @@ import numpy as np
 from ai_analyzer import analyze_market
 
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 STRATEGY = "Signal v1.6.1"
 
 
@@ -17,10 +17,14 @@ def safe_float(value, default=0.0):
     try:
         if value is None:
             return default
+
         value = float(value)
+
         if not math.isfinite(value):
             return default
+
         return value
+
     except Exception:
         return default
 
@@ -32,38 +36,79 @@ def safe_int(value, default=0):
         return default
 
 
+# ============================================================
+# NORMALIZE DATA
+# ============================================================
+
 def normalize_data(data):
+
     if isinstance(data, pd.DataFrame):
+
         df = data.copy()
+
     elif isinstance(data, list):
+
         df = pd.DataFrame(data)
+
     else:
-        raise ValueError("Data phải là DataFrame hoặc list.")
+
+        raise ValueError(
+            "Data phải là DataFrame hoặc list."
+        )
 
     rename_map = {}
 
-    if "timestamp" in df.columns and "time" not in df.columns:
+    if (
+        "timestamp" in df.columns
+        and "time" not in df.columns
+    ):
         rename_map["timestamp"] = "time"
 
-    if "date" in df.columns and "time" not in df.columns:
+    if (
+        "date" in df.columns
+        and "time" not in df.columns
+    ):
         rename_map["date"] = "time"
 
-    if "Timestamp" in df.columns and "time" not in df.columns:
+    if (
+        "Timestamp" in df.columns
+        and "time" not in df.columns
+    ):
         rename_map["Timestamp"] = "time"
 
     if rename_map:
-        df = df.rename(columns=rename_map)
+        df = df.rename(
+            columns=rename_map
+        )
 
-    required = ["open", "high", "low", "close", "volume"]
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
 
     for col in required:
+
         if col not in df.columns:
-            raise ValueError(f"Thiếu cột bắt buộc: {col}")
+
+            raise ValueError(
+                f"Thiếu cột bắt buộc: {col}"
+            )
+
+    # --------------------------------------------------------
+    # TRADES
+    # --------------------------------------------------------
 
     if "trades" not in df.columns:
+
         if "count" in df.columns:
+
             df["trades"] = df["count"]
+
         else:
+
             df["trades"] = 1.0
 
     numeric_cols = [
@@ -76,56 +121,111 @@ def normalize_data(data):
     ]
 
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna(subset=["open", "high", "low", "close"])
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce",
+        )
+
+    df = df.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
+    )
 
     if len(df) < 100:
-        raise ValueError("Cần ít nhất 100 candles.")
 
-    return df.reset_index(drop=True)
+        raise ValueError(
+            "Cần ít nhất 100 candles."
+        )
+
+    return df.reset_index(
+        drop=True
+    )
 
 
 # ============================================================
 # PRICE / RETURN HELPERS
 # ============================================================
 
-def apply_entry_slippage(price, signal, slippage):
+def apply_entry_slippage(
+    price,
+    signal,
+    slippage,
+):
+
     price = safe_float(price)
 
     if signal == "BUY":
-        return price * (1 + slippage)
+
+        return price * (
+            1 + slippage
+        )
 
     if signal == "SELL":
-        return price * (1 - slippage)
+
+        return price * (
+            1 - slippage
+        )
 
     return price
 
 
-def apply_exit_slippage(price, signal, slippage):
+def apply_exit_slippage(
+    price,
+    signal,
+    slippage,
+):
+
     price = safe_float(price)
 
     if signal == "BUY":
-        return price * (1 - slippage)
+
+        return price * (
+            1 - slippage
+        )
 
     if signal == "SELL":
-        return price * (1 + slippage)
+
+        return price * (
+            1 + slippage
+        )
 
     return price
 
 
-def calculate_trade_return(entry_price, exit_price, signal):
-    entry_price = safe_float(entry_price)
-    exit_price = safe_float(exit_price)
+def calculate_trade_return(
+    entry_price,
+    exit_price,
+    signal,
+):
+
+    entry_price = safe_float(
+        entry_price
+    )
+
+    exit_price = safe_float(
+        exit_price
+    )
 
     if entry_price <= 0:
+
         return 0.0
 
     if signal == "BUY":
-        return (exit_price - entry_price) / entry_price
+
+        return (
+            exit_price - entry_price
+        ) / entry_price
 
     if signal == "SELL":
-        return (entry_price - exit_price) / entry_price
+
+        return (
+            entry_price - exit_price
+        ) / entry_price
 
     return 0.0
 
@@ -134,37 +234,93 @@ def calculate_trade_return(entry_price, exit_price, signal):
 # SCORE GROUP
 # ============================================================
 
-def score_group(signal, score):
+def score_group(
+    signal,
+    score,
+):
+
     if signal == "BUY":
+
         if score <= 9:
+
             return "BUY_8_9"
+
         if score <= 11:
+
             return "BUY_10_11"
+
         if score <= 14:
+
             return "BUY_12_14"
+
         return "BUY_15_PLUS"
 
     if signal == "SELL":
+
         if score >= -9:
+
             return "SELL_-8_-9"
+
         if score >= -11:
+
             return "SELL_-10_-11"
+
         if score >= -14:
+
             return "SELL_-12_-14"
+
         return "SELL_-15_MINUS"
 
     return "OTHER"
 
 
 # ============================================================
-# EXIT ANALYSIS
+# HOLDING
 # ============================================================
 
-def calculate_holding_candles(entry_index, exit_index):
+def calculate_holding_candles(
+    entry_index,
+    exit_index,
+):
+
     try:
-        return max(1, int(exit_index) - int(entry_index) + 1)
+
+        return max(
+            1,
+            int(exit_index)
+            - int(entry_index)
+            + 1,
+        )
+
     except Exception:
+
         return 1
+
+
+# ============================================================
+# GET INDICATORS
+#
+# FIX QUAN TRỌNG:
+# ai_analyzer.py trả indicators bên trong:
+# signal_result["indicators"]
+# ============================================================
+
+def get_indicators(
+    signal_result
+):
+
+    indicators = signal_result.get(
+        "indicators",
+        {}
+    )
+
+    if not isinstance(
+        indicators,
+        dict
+    ):
+        indicators = {}
+
+    return indicators
 
 
 # ============================================================
@@ -180,12 +336,16 @@ def analyze_trade_record(
     fee_rate,
     slippage,
 ):
+
     entry_index = i + 1
 
     if entry_index >= len(df):
+
         return None
 
-    raw_entry = safe_float(df.iloc[entry_index]["open"])
+    raw_entry = safe_float(
+        df.iloc[entry_index]["open"]
+    )
 
     entry_price = apply_entry_slippage(
         raw_entry,
@@ -193,88 +353,175 @@ def analyze_trade_record(
         slippage,
     )
 
-    atr = safe_float(signal_result.get("atr"), 0.0)
+    # --------------------------------------------------------
+    # INDICATORS
+    # --------------------------------------------------------
+
+    indicators = get_indicators(
+        signal_result
+    )
+
+    atr = safe_float(
+        indicators.get("atr"),
+        0.0,
+    )
+
+    # --------------------------------------------------------
+    # ATR FALLBACK
+    # --------------------------------------------------------
 
     if atr <= 0:
-        start_atr = max(0, i - 13)
 
-        ranges = (
-            df.iloc[start_atr:i + 1]["high"]
-            - df.iloc[start_atr:i + 1]["low"]
+        start_atr = max(
+            0,
+            i - 13,
         )
 
-        atr = safe_float(ranges.mean(), 0.0)
+        ranges = (
+            df.iloc[
+                start_atr:i + 1
+            ]["high"]
+            -
+            df.iloc[
+                start_atr:i + 1
+            ]["low"]
+        )
+
+        atr = safe_float(
+            ranges.mean(),
+            0.0,
+        )
 
     if atr <= 0:
+
         return None
 
+    # --------------------------------------------------------
+    # SL / TP
+    # --------------------------------------------------------
+
     stop_loss = safe_float(
-        signal_result.get("stop_loss"),
+        signal_result.get(
+            "stop_loss"
+        ),
         0.0,
     )
 
     take_profit = safe_float(
-        signal_result.get("take_profit"),
+        signal_result.get(
+            "take_profit"
+        ),
         0.0,
     )
 
-    if stop_loss <= 0 or take_profit <= 0:
+    if (
+        stop_loss <= 0
+        or take_profit <= 0
+    ):
 
         if signal == "BUY":
-            stop_loss = entry_price - 1.5 * atr
-            take_profit = entry_price + 3.0 * atr
+
+            stop_loss = (
+                entry_price
+                - 1.5 * atr
+            )
+
+            take_profit = (
+                entry_price
+                + 3.0 * atr
+            )
 
         else:
-            stop_loss = entry_price + 1.5 * atr
-            take_profit = entry_price - 3.0 * atr
 
-    exit_index = None
-    exit_price_raw = None
-    exit_reason = None
+            stop_loss = (
+                entry_price
+                + 1.5 * atr
+            )
+
+            take_profit = (
+                entry_price
+                - 3.0 * atr
+            )
 
     # --------------------------------------------------------
     # SEARCH EXIT
     # --------------------------------------------------------
 
-    for j in range(entry_index, len(df)):
+    exit_index = None
+    exit_price_raw = None
+    exit_reason = None
 
-        candle_high = safe_float(df.iloc[j]["high"])
-        candle_low = safe_float(df.iloc[j]["low"])
+    for j in range(
+        entry_index,
+        len(df)
+    ):
+
+        candle_high = safe_float(
+            df.iloc[j]["high"]
+        )
+
+        candle_low = safe_float(
+            df.iloc[j]["low"]
+        )
 
         if signal == "BUY":
 
             # SL first
             if candle_low <= stop_loss:
+
                 exit_index = j
-                exit_price_raw = stop_loss
+
+                exit_price_raw = (
+                    stop_loss
+                )
+
                 exit_reason = "SL"
+
                 break
 
             # TP second
             if candle_high >= take_profit:
+
                 exit_index = j
-                exit_price_raw = take_profit
+
+                exit_price_raw = (
+                    take_profit
+                )
+
                 exit_reason = "TP"
+
                 break
 
         elif signal == "SELL":
 
             # SL first
             if candle_high >= stop_loss:
+
                 exit_index = j
-                exit_price_raw = stop_loss
+
+                exit_price_raw = (
+                    stop_loss
+                )
+
                 exit_reason = "SL"
+
                 break
 
             # TP second
             if candle_low <= take_profit:
+
                 exit_index = j
-                exit_price_raw = take_profit
+
+                exit_price_raw = (
+                    take_profit
+                )
+
                 exit_reason = "TP"
+
                 break
 
     # --------------------------------------------------------
-    # END OF DATA
+    # EOD
     # --------------------------------------------------------
 
     if exit_index is None:
@@ -282,10 +529,16 @@ def analyze_trade_record(
         exit_index = len(df) - 1
 
         exit_price_raw = safe_float(
-            df.iloc[exit_index]["close"]
+            df.iloc[
+                exit_index
+            ]["close"]
         )
 
         exit_reason = "EOD"
+
+    # --------------------------------------------------------
+    # EXIT SLIPPAGE
+    # --------------------------------------------------------
 
     exit_price = apply_exit_slippage(
         exit_price_raw,
@@ -293,69 +546,133 @@ def analyze_trade_record(
         slippage,
     )
 
+    # --------------------------------------------------------
+    # RETURN
+    # --------------------------------------------------------
+
     trade_return = calculate_trade_return(
         entry_price,
         exit_price,
         signal,
     )
 
-    profit_before_fee = initial_balance * trade_return
+    # --------------------------------------------------------
+    # FEES
+    # --------------------------------------------------------
 
-    entry_fee = initial_balance * fee_rate
+    profit_before_fee = (
+        initial_balance
+        * trade_return
+    )
+
+    entry_fee = (
+        initial_balance
+        * fee_rate
+    )
 
     exit_balance_before_fee = (
-        initial_balance + profit_before_fee
+        initial_balance
+        + profit_before_fee
     )
 
     exit_fee = (
-        exit_balance_before_fee * fee_rate
+        exit_balance_before_fee
+        * fee_rate
     )
 
-    trade_fee = entry_fee + exit_fee
+    trade_fee = (
+        entry_fee
+        + exit_fee
+    )
 
     profit_after_fee = (
-        profit_before_fee - trade_fee
+        profit_before_fee
+        - trade_fee
     )
 
-    holding_candles = calculate_holding_candles(
-        entry_index,
-        exit_index,
+    holding_candles = (
+        calculate_holding_candles(
+            entry_index,
+            exit_index,
+        )
     )
 
-    # --------------------------------------------------------
-    # INDICATORS FROM SIGNAL
-    # --------------------------------------------------------
+    # ========================================================
+    # INDICATORS
+    #
+    # FIX:
+    # ĐỌC TỪ signal_result["indicators"]
+    # ========================================================
 
-    ema20 = safe_float(signal_result.get("ema20"), 0.0)
-    ema50 = safe_float(signal_result.get("ema50"), 0.0)
-    rsi = safe_float(signal_result.get("rsi"), 0.0)
-    atr_value = safe_float(signal_result.get("atr"), atr)
-    macd = safe_float(signal_result.get("macd"), 0.0)
+    ema20 = safe_float(
+        indicators.get("ema20"),
+        0.0,
+    )
+
+    ema50 = safe_float(
+        indicators.get("ema50"),
+        0.0,
+    )
+
+    rsi = safe_float(
+        indicators.get("rsi"),
+        50.0,
+    )
+
+    atr_value = safe_float(
+        indicators.get("atr"),
+        atr,
+    )
+
+    macd = safe_float(
+        indicators.get("macd"),
+        0.0,
+    )
+
     macd_signal = safe_float(
-        signal_result.get("macd_signal"),
+        indicators.get(
+            "macd_signal"
+        ),
         0.0,
     )
+
     macd_histogram = safe_float(
-        signal_result.get("macd_histogram"),
+        indicators.get(
+            "macd_histogram"
+        ),
         0.0,
     )
-    vwap = safe_float(signal_result.get("vwap"), 0.0)
+
+    vwap = safe_float(
+        indicators.get("vwap"),
+        0.0,
+    )
+
     volume_ratio = safe_float(
-        signal_result.get("volume_ratio"),
+        indicators.get(
+            "volume_ratio"
+        ),
         0.0,
     )
+
     trades_ratio = safe_float(
-        signal_result.get("trades_ratio"),
+        indicators.get(
+            "trades_ratio"
+        ),
         0.0,
     )
+
+    # --------------------------------------------------------
+    # CURRENT CLOSE
+    # --------------------------------------------------------
 
     close_price = safe_float(
         df.iloc[i]["close"]
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # FEATURE FLAGS
-    # --------------------------------------------------------
+    # ========================================================
 
     ema_bearish = (
         ema20 < ema50
@@ -391,68 +708,125 @@ def analyze_trade_record(
         trades_ratio < 0.5
     )
 
+    # ========================================================
+    # RESULT
+    # ========================================================
+
     return {
+
         "signal": signal,
 
         "score": safe_int(
-            signal_result.get("score"),
+            signal_result.get(
+                "score"
+            ),
             0,
         ),
 
         "score_group": score_group(
             signal,
-            safe_int(signal_result.get("score"), 0),
+            safe_int(
+                signal_result.get(
+                    "score"
+                ),
+                0,
+            ),
         ),
 
-        "market_condition": signal_result.get(
-            "market_condition"
-        ),
+        "market_condition":
+            signal_result.get(
+                "market_condition"
+            ),
 
-        "entry_index": entry_index,
-        "exit_index": exit_index,
+        "entry_index":
+            entry_index,
 
-        "entry_price": entry_price,
-        "exit_price": exit_price,
+        "exit_index":
+            exit_index,
 
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
+        "entry_price":
+            entry_price,
 
-        "exit_reason": exit_reason,
+        "exit_price":
+            exit_price,
 
-        "return_pct": trade_return * 100,
+        "stop_loss":
+            stop_loss,
 
-        "profit_before_fee": profit_before_fee,
+        "take_profit":
+            take_profit,
 
-        "fees": trade_fee,
+        "exit_reason":
+            exit_reason,
 
-        "profit": profit_after_fee,
+        "return_pct":
+            trade_return * 100,
 
-        "holding_candles": holding_candles,
+        "profit_before_fee":
+            profit_before_fee,
 
-        "atr": atr_value,
+        "fees":
+            trade_fee,
 
-        "rsi": rsi,
+        "profit":
+            profit_after_fee,
 
-        "ema20": ema20,
-        "ema50": ema50,
+        "holding_candles":
+            holding_candles,
 
-        "macd": macd,
-        "macd_signal": macd_signal,
-        "macd_histogram": macd_histogram,
+        "atr":
+            atr_value,
 
-        "vwap": vwap,
+        "rsi":
+            rsi,
 
-        "volume_ratio": volume_ratio,
-        "trades_ratio": trades_ratio,
+        "ema20":
+            ema20,
 
-        "ema_bearish": ema_bearish,
-        "price_below_ema20": price_below_ema20,
-        "rsi_weak": rsi_weak,
-        "macd_bearish": macd_bearish,
-        "macd_hist_bearish": macd_hist_bearish,
-        "below_vwap": below_vwap,
-        "low_volume": low_volume,
-        "low_trades": low_trades,
+        "ema50":
+            ema50,
+
+        "macd":
+            macd,
+
+        "macd_signal":
+            macd_signal,
+
+        "macd_histogram":
+            macd_histogram,
+
+        "vwap":
+            vwap,
+
+        "volume_ratio":
+            volume_ratio,
+
+        "trades_ratio":
+            trades_ratio,
+
+        "ema_bearish":
+            ema_bearish,
+
+        "price_below_ema20":
+            price_below_ema20,
+
+        "rsi_weak":
+            rsi_weak,
+
+        "macd_bearish":
+            macd_bearish,
+
+        "macd_hist_bearish":
+            macd_hist_bearish,
+
+        "below_vwap":
+            below_vwap,
+
+        "low_volume":
+            low_volume,
+
+        "low_trades":
+            low_trades,
     }
 
 
@@ -463,6 +837,7 @@ def analyze_trade_record(
 def aggregate_trades(trades):
 
     if not trades:
+
         return {
             "trades": 0,
             "wins": 0,
@@ -478,7 +853,9 @@ def aggregate_trades(trades):
         }
 
     profits = [
-        safe_float(x["profit"])
+        safe_float(
+            x["profit"]
+        )
         for x in trades
     ]
 
@@ -492,8 +869,13 @@ def aggregate_trades(trades):
         if x < 0
     ]
 
-    gross_profit = sum(positive)
-    gross_loss = abs(sum(negative))
+    gross_profit = sum(
+        positive
+    )
+
+    gross_loss = abs(
+        sum(negative)
+    )
 
     pf = (
         gross_profit / gross_loss
@@ -505,51 +887,69 @@ def aggregate_trades(trades):
     losses = len(negative)
 
     return {
-        "trades": len(trades),
 
-        "wins": wins,
+        "trades":
+            len(trades),
 
-        "losses": losses,
+        "wins":
+            wins,
 
-        "win_rate": (
-            wins / len(trades) * 100
-            if trades
-            else 0.0
-        ),
+        "losses":
+            losses,
 
-        "profit": sum(profits),
+        "win_rate":
+            (
+                wins / len(trades) * 100
+                if trades
+                else 0.0
+            ),
 
-        "profit_before_fees": sum(
-            safe_float(x["profit_before_fee"])
-            for x in trades
-        ),
+        "profit":
+            sum(profits),
 
-        "fees": sum(
-            safe_float(x["fees"])
-            for x in trades
-        ),
-
-        "profit_factor": pf,
-
-        "avg_profit": (
-            sum(positive) / wins
-            if wins
-            else 0.0
-        ),
-
-        "avg_loss": (
-            sum(negative) / losses
-            if losses
-            else 0.0
-        ),
-
-        "avg_holding_candles": (
+        "profit_before_fees":
             sum(
-                safe_float(x["holding_candles"])
+                safe_float(
+                    x["profit_before_fee"]
+                )
                 for x in trades
-            )
-            / len(trades)
-        ),
+            ),
+
+        "fees":
+            sum(
+                safe_float(
+                    x["fees"]
+                )
+                for x in trades
+            ),
+
+        "profit_factor":
+            pf,
+
+        "avg_profit":
+            (
+                sum(positive) / wins
+                if wins
+                else 0.0
+            ),
+
+        "avg_loss":
+            (
+                sum(negative) / losses
+                if losses
+                else 0.0
+            ),
+
+        "avg_holding_candles":
+            (
+                sum(
+                    safe_float(
+                        x["holding_candles"]
+                    )
+                    for x in trades
+                )
+                / len(trades)
+            ),
     }
 
 
@@ -560,16 +960,25 @@ def aggregate_trades(trades):
 def feature_diagnostic(trades):
 
     if not trades:
+
         return {}
 
     feature_names = [
+
         "ema_bearish",
+
         "price_below_ema20",
+
         "rsi_weak",
+
         "macd_bearish",
+
         "macd_hist_bearish",
+
         "below_vwap",
+
         "low_volume",
+
         "low_trades",
     ]
 
@@ -579,20 +988,29 @@ def feature_diagnostic(trades):
 
         active = [
             x for x in trades
-            if bool(x.get(feature))
+            if bool(
+                x.get(feature)
+            )
         ]
 
         inactive = [
             x for x in trades
-            if not bool(x.get(feature))
+            if not bool(
+                x.get(feature)
+            )
         ]
 
-        active_stats = aggregate_trades(active)
-        inactive_stats = aggregate_trades(inactive)
-
         result[feature] = {
-            "active": active_stats,
-            "inactive": inactive_stats,
+
+            "active":
+                aggregate_trades(
+                    active
+                ),
+
+            "inactive":
+                aggregate_trades(
+                    inactive
+                ),
         }
 
     return result
@@ -608,18 +1026,25 @@ def score_diagnostic(trades):
 
     for trade in trades:
 
-        group = trade["score_group"]
+        group = trade[
+            "score_group"
+        ]
 
         if group not in groups:
+
             groups[group] = []
 
-        groups[group].append(trade)
+        groups[group].append(
+            trade
+        )
 
     result = {}
 
     for group, items in groups.items():
 
-        result[group] = aggregate_trades(items)
+        result[group] = (
+            aggregate_trades(items)
+        )
 
     return result
 
@@ -632,25 +1057,34 @@ def exit_diagnostic(trades):
 
     result = {}
 
-    reasons = ["SL", "TP", "EOD"]
+    reasons = [
+        "SL",
+        "TP",
+        "EOD",
+    ]
 
     for reason in reasons:
 
         items = [
             x for x in trades
-            if x["exit_reason"] == reason
+            if x["exit_reason"]
+            == reason
         ]
 
-        result[reason] = aggregate_trades(items)
+        result[reason] = (
+            aggregate_trades(items)
+        )
 
     return result
 
 
 # ============================================================
-# MARKET CONDITION DIAGNOSTIC
+# MARKET CONDITION
 # ============================================================
 
-def market_condition_diagnostic(trades):
+def market_condition_diagnostic(
+    trades
+):
 
     groups = {}
 
@@ -661,16 +1095,24 @@ def market_condition_diagnostic(trades):
         )
 
         if condition is None:
+
             condition = "UNKNOWN"
 
         if condition not in groups:
+
             groups[condition] = []
 
-        groups[condition].append(trade)
+        groups[condition].append(
+            trade
+        )
 
     return {
-        condition: aggregate_trades(items)
-        for condition, items in groups.items()
+
+        condition:
+            aggregate_trades(items)
+
+        for condition, items
+        in groups.items()
     }
 
 
@@ -681,21 +1123,37 @@ def market_condition_diagnostic(trades):
 def atr_diagnostic(trades):
 
     if not trades:
+
         return {}
 
     atr_values = [
-        safe_float(x["atr"])
+
+        safe_float(
+            x["atr"]
+        )
+
         for x in trades
-        if safe_float(x["atr"]) > 0
+
+        if safe_float(
+            x["atr"]
+        ) > 0
     ]
 
     if not atr_values:
+
         return {}
 
     return {
-        "min": min(atr_values),
-        "max": max(atr_values),
-        "average": sum(atr_values) / len(atr_values),
+
+        "min":
+            min(atr_values),
+
+        "max":
+            max(atr_values),
+
+        "average":
+            sum(atr_values)
+            / len(atr_values),
     }
 
 
@@ -706,75 +1164,124 @@ def atr_diagnostic(trades):
 def rsi_diagnostic(trades):
 
     groups = {
+
         "RSI_LT_30": [],
+
         "RSI_30_40": [],
+
         "RSI_40_50": [],
+
         "RSI_50_60": [],
+
         "RSI_GTE_60": [],
     }
 
     for trade in trades:
 
         rsi = safe_float(
-            trade.get("rsi")
+            trade.get("rsi"),
+            50.0,
         )
 
         if rsi < 30:
-            groups["RSI_LT_30"].append(trade)
+
+            groups[
+                "RSI_LT_30"
+            ].append(trade)
 
         elif rsi < 40:
-            groups["RSI_30_40"].append(trade)
+
+            groups[
+                "RSI_30_40"
+            ].append(trade)
 
         elif rsi < 50:
-            groups["RSI_40_50"].append(trade)
+
+            groups[
+                "RSI_40_50"
+            ].append(trade)
 
         elif rsi < 60:
-            groups["RSI_50_60"].append(trade)
+
+            groups[
+                "RSI_50_60"
+            ].append(trade)
 
         else:
-            groups["RSI_GTE_60"].append(trade)
+
+            groups[
+                "RSI_GTE_60"
+            ].append(trade)
 
     return {
-        group: aggregate_trades(items)
-        for group, items in groups.items()
+
+        group:
+            aggregate_trades(items)
+
+        for group, items
+        in groups.items()
     }
 
 
 # ============================================================
-# HOLDING TIME DIAGNOSTIC
+# HOLDING TIME
 # ============================================================
 
-def holding_diagnostic(trades):
+def holding_diagnostic(
+    trades
+):
 
     groups = {
+
         "1_3": [],
+
         "4_8": [],
+
         "9_20": [],
+
         "21_PLUS": [],
     }
 
     for trade in trades:
 
         candles = safe_int(
-            trade.get("holding_candles"),
+            trade.get(
+                "holding_candles"
+            ),
             0,
         )
 
         if candles <= 3:
-            groups["1_3"].append(trade)
+
+            groups[
+                "1_3"
+            ].append(trade)
 
         elif candles <= 8:
-            groups["4_8"].append(trade)
+
+            groups[
+                "4_8"
+            ].append(trade)
 
         elif candles <= 20:
-            groups["9_20"].append(trade)
+
+            groups[
+                "9_20"
+            ].append(trade)
 
         else:
-            groups["21_PLUS"].append(trade)
+
+            groups[
+                "21_PLUS"
+            ].append(trade)
 
     return {
-        group: aggregate_trades(items)
-        for group, items in groups.items()
+
+        group:
+            aggregate_trades(items)
+
+        for group, items
+        in groups.items()
     }
 
 
@@ -800,31 +1307,49 @@ def run_diagnostic(
     first_analyzer_error = None
 
     signal_buy_count = 0
+
     signal_sell_count = 0
+
     signal_hold_count = 0
 
-    # --------------------------------------------------------
-    # CACHE SIGNAL ONCE PER CANDLE
-    # --------------------------------------------------------
+    # ========================================================
+    # SIGNAL CACHE
+    # ========================================================
 
-    for i in range(100, len(df) - 1):
+    for i in range(
+        100,
+        len(df) - 1
+    ):
 
-        analysis_df = df.iloc[:i + 1].copy()
+        analysis_df = (
+            df.iloc[
+                :i + 1
+            ].copy()
+        )
 
         try:
 
             try:
-                signal_result = analyze_market(
-                    analysis_df
+
+                signal_result = (
+                    analyze_market(
+                        analysis_df
+                    )
                 )
 
             except TypeError:
 
-                signal_result = analyze_market(
-                    data=analysis_df
+                signal_result = (
+                    analyze_market(
+                        data=analysis_df
+                    )
                 )
 
-            if not isinstance(signal_result, dict):
+            if not isinstance(
+                signal_result,
+                dict
+            ):
+
                 signal_result = {}
 
         except Exception as exc:
@@ -832,101 +1357,144 @@ def run_diagnostic(
             analyzer_error_count += 1
 
             if first_analyzer_error is None:
-                first_analyzer_error = str(exc)
+
+                first_analyzer_error = (
+                    str(exc)
+                )
 
             continue
 
-        signal_cache[i] = signal_result
+        signal_cache[i] = (
+            signal_result
+        )
 
         signal = str(
             signal_result.get(
                 "signal",
-                "HOLD"
+                "HOLD",
             )
         ).upper()
 
         if signal == "BUY":
+
             signal_buy_count += 1
 
         elif signal == "SELL":
+
             signal_sell_count += 1
 
         else:
+
             signal_hold_count += 1
 
-    # --------------------------------------------------------
-    # EXECUTE DIAGNOSTIC TRADES
-    # --------------------------------------------------------
+    # ========================================================
+    # EXECUTE TRADES
+    # ========================================================
 
     i = 100
 
     while i < len(df) - 1:
 
         if i not in signal_cache:
+
             i += 1
+
             continue
 
-        signal_result = signal_cache[i]
+        signal_result = (
+            signal_cache[i]
+        )
 
         signal = str(
             signal_result.get(
                 "signal",
-                "HOLD"
+                "HOLD",
             )
         ).upper()
 
         trade_allowed = bool(
             signal_result.get(
                 "trade_allowed",
-                signal in ["BUY", "SELL"]
+                signal
+                in [
+                    "BUY",
+                    "SELL",
+                ],
             )
         )
 
-        if signal not in ["BUY", "SELL"]:
+        if signal not in [
+            "BUY",
+            "SELL",
+        ]:
+
             i += 1
+
             continue
 
         if not trade_allowed:
+
             i += 1
+
             continue
 
         trade = analyze_trade_record(
+
             df=df,
-            signal_result=signal_result,
+
+            signal_result=(
+                signal_result
+            ),
+
             signal=signal,
+
             i=i,
-            initial_balance=initial_balance,
+
+            initial_balance=(
+                initial_balance
+            ),
+
             fee_rate=fee_rate,
+
             slippage=slippage,
         )
 
         if trade is None:
+
             i += 1
+
             continue
 
-        all_trades.append(trade)
+        all_trades.append(
+            trade
+        )
 
-        # EXACT ENGINE BEHAVIOR:
-        # after trade, jump after exit candle
-
-        i = trade["exit_index"] + 1
+        # EXACT ENGINE BEHAVIOR
+        i = (
+            trade["exit_index"]
+            + 1
+        )
 
     # ========================================================
-    # SPLIT BUY / SELL
+    # BUY / SELL
     # ========================================================
 
     buy_trades = [
+
         x for x in all_trades
+
         if x["signal"] == "BUY"
     ]
 
     sell_trades = [
+
         x for x in all_trades
+
         if x["signal"] == "SELL"
     ]
 
     # ========================================================
-    # COMPARISON
+    # STATS
     # ========================================================
 
     buy_stats = aggregate_trades(
@@ -938,10 +1506,11 @@ def run_diagnostic(
     )
 
     # ========================================================
-    # DIFFERENCE
+    # COMPARISON
     # ========================================================
 
     comparison = {
+
         "profit_difference_buy_minus_sell":
             buy_stats["profit"]
             - sell_stats["profit"],
@@ -963,8 +1532,13 @@ def run_diagnostic(
             - sell_stats["avg_loss"],
 
         "avg_holding_difference":
-            buy_stats["avg_holding_candles"]
-            - sell_stats["avg_holding_candles"],
+            buy_stats[
+                "avg_holding_candles"
+            ]
+            -
+            sell_stats[
+                "avg_holding_candles"
+            ],
     }
 
     # ========================================================
@@ -972,6 +1546,7 @@ def run_diagnostic(
     # ========================================================
 
     return {
+
         "status": "ok",
 
         "version": VERSION,
@@ -988,23 +1563,29 @@ def run_diagnostic(
 
         "method": (
             "Diagnostic BUY vs SELL sử dụng "
-            "cùng Signal v1.6.1 và execution mechanics "
-            "của backtest_engine.py v1.1.2."
+            "cùng Signal v1.6.1 và execution "
+            "mechanics của backtest_engine.py v1.1.2."
         ),
 
         "warning": (
-            "Diagnostic không thay đổi Signal v1.6.1 "
-            "và không thay đổi backtest_engine.py."
+            "Diagnostic không thay đổi "
+            "Signal v1.6.1 và không thay đổi "
+            "backtest_engine.py."
         ),
 
         "debug": {
-            "signal_calculations": len(signal_cache),
 
-            "signal_buy_count": signal_buy_count,
+            "signal_calculations":
+                len(signal_cache),
 
-            "signal_sell_count": signal_sell_count,
+            "signal_buy_count":
+                signal_buy_count,
 
-            "signal_hold_count": signal_hold_count,
+            "signal_sell_count":
+                signal_sell_count,
+
+            "signal_hold_count":
+                signal_hold_count,
 
             "analyzer_error_count":
                 analyzer_error_count,
@@ -1013,12 +1594,15 @@ def run_diagnostic(
                 first_analyzer_error,
         },
 
-        "overall": aggregate_trades(
-            all_trades
-        ),
+        "overall":
+            aggregate_trades(
+                all_trades
+            ),
 
         "buy": {
-            "summary": buy_stats,
+
+            "summary":
+                buy_stats,
 
             "score_groups":
                 score_diagnostic(
@@ -1057,7 +1641,9 @@ def run_diagnostic(
         },
 
         "sell": {
-            "summary": sell_stats,
+
+            "summary":
+                sell_stats,
 
             "score_groups":
                 score_diagnostic(
@@ -1095,7 +1681,9 @@ def run_diagnostic(
                 ),
         },
 
-        "comparison": comparison,
+        "comparison":
+            comparison,
 
-        "trades": all_trades,
+        "trades":
+            all_trades,
     }
