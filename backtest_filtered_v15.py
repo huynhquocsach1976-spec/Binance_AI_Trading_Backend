@@ -1,7 +1,7 @@
 from ai_analyzer import analyze_market
 
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 
 # ============================================================
@@ -64,7 +64,6 @@ def should_remove_trade(
         "REMOVE_SELL_-8_-9",
         "REMOVE_BOTH"
     ]:
-
         if (
             signal == "SELL"
             and -9 <= score <= -8
@@ -79,7 +78,6 @@ def should_remove_trade(
         "REMOVE_BUY_12_14",
         "REMOVE_BOTH"
     ]:
-
         if (
             signal == "BUY"
             and 12 <= score <= 14
@@ -94,6 +92,7 @@ def should_remove_trade(
 # ============================================================
 
 def get_atr(signal_result):
+
     indicators = signal_result.get(
         "indicators",
         {}
@@ -118,7 +117,10 @@ def calculate_sl_tp(
     signal_result,
     entry_price
 ):
-    signal = get_signal(signal_result)
+
+    signal = get_signal(
+        signal_result
+    )
 
     stop_loss = signal_result.get(
         "stop_loss"
@@ -132,7 +134,6 @@ def calculate_sl_tp(
         stop_loss is not None
         and take_profit is not None
     ):
-
         return (
             safe_float(stop_loss),
             safe_float(take_profit)
@@ -143,21 +144,18 @@ def calculate_sl_tp(
     )
 
     if atr <= 0:
-
         return (
             None,
             None
         )
 
     if signal == "BUY":
-
         return (
             entry_price - 1.5 * atr,
             entry_price + 3.0 * atr
         )
 
     if signal == "SELL":
-
         return (
             entry_price + 1.5 * atr,
             entry_price - 3.0 * atr
@@ -177,6 +175,7 @@ def check_exit(
     position,
     candle
 ):
+
     side = position["side"]
 
     high = safe_float(
@@ -211,7 +210,7 @@ def check_exit(
             and high >= take_profit
         )
 
-        # Same candle SL + TP:
+        # Same candle:
         # SL first
         if stop_hit:
             return (
@@ -243,7 +242,7 @@ def check_exit(
             and low <= take_profit
         )
 
-        # Same candle SL + TP:
+        # Same candle:
         # SL first
         if stop_hit:
             return (
@@ -303,18 +302,84 @@ def apply_exit_slippage(
 
 
 # ============================================================
+# PRE-COMPUTE SIGNALS
+#
+# QUAN TRỌNG:
+# analyze_market() chỉ chạy 1 lần / candle.
+#
+# Không thay đổi Signal v1.6.1.
+# ============================================================
+
+def build_signal_cache(candles):
+
+    signal_cache = {}
+
+    analyzer_errors = 0
+
+    first_analyzer_error = None
+
+    for i in range(
+        50,
+        len(candles)
+    ):
+
+        try:
+
+            analysis = analyze_market(
+                candles[:i + 1]
+            )
+
+            if not isinstance(
+                analysis,
+                dict
+            ):
+
+                analyzer_errors += 1
+
+                if first_analyzer_error is None:
+                    first_analyzer_error = (
+                        "analyze_market không trả về dict"
+                    )
+
+                signal_cache[i] = None
+
+                continue
+
+            signal_cache[i] = analysis
+
+        except Exception as e:
+
+            analyzer_errors += 1
+
+            if first_analyzer_error is None:
+                first_analyzer_error = str(e)
+
+            signal_cache[i] = None
+
+    return (
+        signal_cache,
+        analyzer_errors,
+        first_analyzer_error
+    )
+
+
+# ============================================================
 # SINGLE FILTERED BACKTEST
 # ============================================================
 
 def run_filtered_backtest(
     candles,
+    signal_cache,
     mode="BASELINE",
     initial_balance=1000.0,
     fee_rate=0.0004,
-    slippage=0.0001
+    slippage=0.0001,
+    analyzer_errors=0,
+    first_analyzer_error=None
 ):
 
     if not candles:
+
         return {
             "status": "error",
             "message": "Không có candles"
@@ -342,10 +407,6 @@ def run_filtered_backtest(
         "SELL_-8_-9": 0,
         "BUY_12_14": 0
     }
-
-    analyzer_errors = 0
-
-    first_analyzer_error = None
 
     # ========================================================
     # MAIN LOOP
@@ -375,11 +436,9 @@ def run_filtered_backtest(
 
                 side = position["side"]
 
-                raw_exit_price = exit_price
-
                 actual_exit_price = (
                     apply_exit_slippage(
-                        raw_exit_price,
+                        exit_price,
                         side,
                         slippage
                     )
@@ -459,6 +518,7 @@ def run_filtered_backtest(
                     return_pct = 0.0
 
                 trades.append({
+
                     "signal": position[
                         "signal"
                     ],
@@ -534,34 +594,12 @@ def run_filtered_backtest(
                 continue
 
         # ----------------------------------------------------
-        # 2. Analyze current candle
+        # 2. Get cached Signal
         # ----------------------------------------------------
 
-        try:
+        analysis = signal_cache.get(i)
 
-            analysis = analyze_market(
-                candles[:i + 1]
-            )
-
-        except Exception as e:
-
-            analyzer_errors += 1
-
-            if first_analyzer_error is None:
-                first_analyzer_error = str(e)
-
-            continue
-
-        if not isinstance(
-            analysis,
-            dict
-        ):
-            analyzer_errors += 1
-
-            if first_analyzer_error is None:
-                first_analyzer_error = (
-                    "analyze_market không trả về dict"
-                )
+        if analysis is None:
 
             continue
 
@@ -569,23 +607,31 @@ def run_filtered_backtest(
             analysis
         )
 
+        # ----------------------------------------------------
+        # HOLD
+        # ----------------------------------------------------
+
         if signal not in [
             "BUY",
             "SELL"
         ]:
 
-            signal_counts["HOLD"] += 1
+            signal_counts[
+                "HOLD"
+            ] += 1
 
             continue
 
-        signal_counts[signal] += 1
+        signal_counts[
+            signal
+        ] += 1
 
         score = get_score(
             analysis
         )
 
         # ----------------------------------------------------
-        # 3. Filter
+        # 3. FILTER
         # ----------------------------------------------------
 
         if should_remove_trade(
@@ -622,13 +668,15 @@ def run_filtered_backtest(
         if not get_trade_allowed(
             analysis
         ):
+
             continue
 
         # ----------------------------------------------------
-        # 5. Need next candle for entry
+        # 5. Next candle entry
         # ----------------------------------------------------
 
         if i + 1 >= len(candles):
+
             continue
 
         next_candle = candles[
@@ -640,10 +688,11 @@ def run_filtered_backtest(
         )
 
         if raw_entry_price <= 0:
+
             continue
 
         # ----------------------------------------------------
-        # 6. Entry price + slippage
+        # 6. Entry slippage
         # ----------------------------------------------------
 
         entry_price = (
@@ -669,11 +718,14 @@ def run_filtered_backtest(
             stop_loss is None
             or take_profit is None
         ):
+
             continue
 
         # ----------------------------------------------------
         # 8. Position sizing
-        # Full balance compounding
+        #
+        # GIỮ NGUYÊN logic v1.5.0
+        # để không làm thay đổi kết quả backtest.
         # ----------------------------------------------------
 
         quantity = (
@@ -689,13 +741,15 @@ def run_filtered_backtest(
         balance -= entry_fee
 
         if balance < 0:
+
             balance = 0.0
 
         # ----------------------------------------------------
-        # 9. Position
+        # 9. Open position
         # ----------------------------------------------------
 
         position = {
+
             "side": signal,
 
             "signal": signal,
@@ -819,6 +873,7 @@ def run_filtered_backtest(
             return_pct = 0.0
 
         trades.append({
+
             "signal": position[
                 "signal"
             ],
@@ -894,38 +949,53 @@ def run_filtered_backtest(
     # STATISTICS
     # ========================================================
 
-    total_trades = len(trades)
+    total_trades = len(
+        trades
+    )
 
     wins = [
         t for t in trades
-        if safe_float(t.get("profit")) > 0
+        if safe_float(
+            t.get("profit")
+        ) > 0
     ]
 
     losses = [
         t for t in trades
-        if safe_float(t.get("profit")) < 0
+        if safe_float(
+            t.get("profit")
+        ) < 0
     ]
 
     gross_profit = sum(
-        safe_float(t.get("profit"))
+        safe_float(
+            t.get("profit")
+        )
         for t in wins
     )
 
     gross_loss = abs(
         sum(
-            safe_float(t.get("profit"))
+            safe_float(
+                t.get("profit")
+            )
             for t in losses
         )
     )
 
     if gross_loss > 0:
+
         profit_factor = (
             gross_profit
             / gross_loss
         )
+
     elif gross_profit > 0:
+
         profit_factor = float("inf")
+
     else:
+
         profit_factor = 0.0
 
     if total_trades > 0:
@@ -969,16 +1039,22 @@ def run_filtered_backtest(
 
     buy_wins = [
         t for t in buy_trades
-        if safe_float(t.get("profit")) > 0
+        if safe_float(
+            t.get("profit")
+        ) > 0
     ]
 
     sell_wins = [
         t for t in sell_trades
-        if safe_float(t.get("profit")) > 0
+        if safe_float(
+            t.get("profit")
+        ) > 0
     ]
 
     total_fees = sum(
-        safe_float(t.get("fees"))
+        safe_float(
+            t.get("fees")
+        )
         for t in trades
     )
 
@@ -1008,6 +1084,7 @@ def run_filtered_backtest(
     # ========================================================
 
     current_loss_streak = 0
+
     max_loss_streak = 0
 
     for trade in trades:
@@ -1024,6 +1101,7 @@ def run_filtered_backtest(
                 current_loss_streak
                 > max_loss_streak
             ):
+
                 max_loss_streak = (
                     current_loss_streak
                 )
@@ -1037,6 +1115,7 @@ def run_filtered_backtest(
     # ========================================================
 
     return {
+
         "status": "ok",
 
         "version": VERSION,
@@ -1104,6 +1183,7 @@ def run_filtered_backtest(
         ),
 
         "BUY": {
+
             "trades": len(
                 buy_trades
             ),
@@ -1124,6 +1204,7 @@ def run_filtered_backtest(
         },
 
         "SELL": {
+
             "trades": len(
                 sell_trades
             ),
@@ -1144,8 +1225,11 @@ def run_filtered_backtest(
         },
 
         "exit_analysis": {
+
             "STOP_LOSS": stop_loss_count,
+
             "TAKE_PROFIT": take_profit_count,
+
             "END_OF_DATA": eod_count
         },
 
@@ -1154,23 +1238,21 @@ def run_filtered_backtest(
         "filter_counts": filtered_counts,
 
         "debug": {
-            "signal_buy_count": signal_counts[
-                "BUY"
-            ],
 
-            "signal_sell_count": signal_counts[
-                "SELL"
-            ],
+            "signal_buy_count":
+                signal_counts["BUY"],
 
-            "signal_hold_count": signal_counts[
-                "HOLD"
-            ],
+            "signal_sell_count":
+                signal_counts["SELL"],
 
-            "analyzer_error_count": analyzer_errors,
+            "signal_hold_count":
+                signal_counts["HOLD"],
 
-            "first_analyzer_error": (
+            "analyzer_error_count":
+                analyzer_errors,
+
+            "first_analyzer_error":
                 first_analyzer_error
-            )
         },
 
         "trades_detail": trades
@@ -1189,35 +1271,96 @@ def run_filtered_diagnostic_v15(
 ):
 
     modes = [
+
         "BASELINE",
+
         "REMOVE_SELL_-8_-9",
+
         "REMOVE_BUY_12_14",
+
         "REMOVE_BOTH"
     ]
+
+    # ========================================================
+    # STEP 1
+    # ========================================================
+    # Tính Signal chỉ 1 lần cho toàn bộ candles.
+    #
+    # Đây là phần tối ưu quan trọng nhất.
+    # ========================================================
+
+    (
+        signal_cache,
+        analyzer_errors,
+        first_analyzer_error
+    ) = build_signal_cache(
+        candles
+    )
+
+    # ========================================================
+    # STEP 2
+    # ========================================================
 
     results = {}
 
     for mode in modes:
 
         results[mode] = run_filtered_backtest(
+
             candles=candles,
+
+            signal_cache=signal_cache,
+
             mode=mode,
+
             initial_balance=initial_balance,
+
             fee_rate=fee_rate,
-            slippage=slippage
+
+            slippage=slippage,
+
+            analyzer_errors=analyzer_errors,
+
+            first_analyzer_error=first_analyzer_error
         )
 
+    # ========================================================
+    # STEP 3
+    # ========================================================
+
     return {
+
         "status": "ok",
 
         "version": VERSION,
 
         "method": (
             "True filtered backtest with "
+            "cached Signal v1.6.1, "
             "next-candle entry, "
             "SL/TP, fees, slippage "
             "and full-balance compounding"
         ),
+
+        "optimization": {
+
+            "enabled": True,
+
+            "description": (
+                "analyze_market() chỉ chạy "
+                "một lần cho mỗi candle; "
+                "4 filter modes dùng chung "
+                "Signal cache."
+            ),
+
+            "signal_calculations": len(
+                signal_cache
+            ),
+
+            "filter_modes": len(
+                modes
+            )
+        },
 
         "warning": (
             "Signal v1.6.1 được giữ nguyên. "
