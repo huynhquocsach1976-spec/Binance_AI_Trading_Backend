@@ -7,8 +7,8 @@ import os
 import csv
 
 from ai_analyzer import analyze_market
-
 from backtest_engine import run_backtest
+from backtest_diagnostic_v16 import run_diagnostic
 
 from backtest_v12 import (
     run_multi_backtest,
@@ -107,6 +107,40 @@ def health():
 # PRICE
 # ============================================================
 
+@app.get("/backtest-diagnostic-v16/{symbol}")
+def backtest_diagnostic_v16(
+    symbol: str,
+    candles: int = 2880
+):
+    try:
+
+        # ----------------------------------------------------
+        # GIỐNG CÁCH BACKTEST HIỆN TẠI:
+        # dùng endpoint /history/{symbol}
+        # hoặc hàm lấy historical data hiện có
+        # ----------------------------------------------------
+
+        data_result = get_history_data(
+            symbol,
+            candles
+        )
+
+        result = run_diagnostic(
+            data_result
+        )
+
+        result["symbol"] = symbol.upper()
+
+        result["candles"] = candles
+
+        return result
+
+    except Exception as exc:
+
+        return {
+            "status": "error",
+            "message": str(exc)
+        }
 @app.get("/price/{symbol}")
 def get_price(symbol: str):
 
