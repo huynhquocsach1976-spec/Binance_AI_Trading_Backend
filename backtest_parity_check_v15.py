@@ -1,45 +1,48 @@
 import requests
-import json
-import math
+from typing import Any, Dict, List
 
 from backtest_engine import run_backtest
 from backtest_filtered_v15 import run_filtered_diagnostic_v15
 
 
-# ============================================================
-# CONFIG
-# ============================================================
-
-SYMBOL = "BTCUSDT"
-KRAKEN_SYMBOL = "XBTUSD"
-
-CANDLES_COUNT = 720
-
-INITIAL_BALANCE = 1000.0
-FEE_RATE = 0.0004
-SLIPPAGE = 0.0001
+VERSION = "1.5.0"
 
 KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
+PAIR_MAP = {
+    "BTCUSDT": "XBTUSD",
+    "ETHUSDT": "ETHUSD",
+    "SOLUSDT": "SOLUSD",
+}
+
 
 # ============================================================
-# LOAD DATA
+# LOAD KRAKEN 720 CANDLES
 # ============================================================
 
-def load_kraken_720():
-    print("=" * 70)
-    print("STEP 1 - LOAD KRAKEN DATA")
-    print("=" * 70)
+def load_kraken_candles(symbol: str, candles: int = 720) -> List[Dict[str, Any]]:
+    symbol = symbol.upper()
 
-    params = {
-        "pair": KRAKEN_SYMBOL,
-        "interval": 60
-    }
+    if symbol not in PAIR_MAP:
+        raise ValueError(
+            f"Symbol không hỗ trợ: {symbol}. "
+            f"Chỉ hỗ trợ: {', '.join(PAIR_MAP.keys())}"
+        )
+
+    if candles != 720:
+        raise ValueError(
+            "Parity Check v1.5 hiện kiểm tra chính xác 720 candles."
+        )
+
+    pair = PAIR_MAP[symbol]
 
     response = requests.get(
         KRAKEN_URL,
-        params=params,
-        timeout=30
+        params={
+            "pair": pair,
+            "interval": 60,
+        },
+        timeout=30,
     )
 
     response.raise_for_status()
@@ -60,724 +63,481 @@ def load_kraken_720():
             pair_key = key
             break
 
-    if pair_key is None:
+    if not pair_key:
         raise RuntimeError(
             "Không tìm thấy dữ liệu OHLC từ Kraken."
         )
 
     rows = result[pair_key]
 
-    if len(rows) < CANDLES_COUNT:
+    if len(rows) < candles:
         raise RuntimeError(
-            f"Kraken chỉ trả {len(rows)} candles, "
-            f"cần {CANDLES_COUNT}."
+            f"Kraken chỉ trả về {len(rows)} candles, "
+            f"cần {candles} candles."
         )
 
-    rows = rows[-CANDLES_COUNT:]
+    rows = rows[-candles:]
 
-    candles = []
+    output = []
 
     for row in rows:
-        candles.append({
-            "time": int(float(row[0])),
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-            "vwap": float(row[5]),
-            "volume": float(row[6]),
-            "trades": int(row[7])
-        })
+        if len(row) < 8:
+            continue
 
-    print(f"Symbol       : {SYMBOL}")
-    print(f"Kraken pair  : {KRAKEN_SYMBOL}")
-    print(f"Candles      : {len(candles)}")
-
-    print()
-    print("FIRST CANDLE")
-    print(json.dumps(candles[0], indent=2))
-
-    print()
-    print("LAST CANDLE")
-    print(json.dumps(candles[-1], indent=2))
-
-    return candles
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def get_value(obj, *keys, default=None):
-    """
-    Lấy value từ dict với nhiều tên key có thể khác nhau.
-    """
-
-    if not isinstance(obj, dict):
-        return default
-
-    for key in keys:
-        if key in obj:
-            return obj[key]
-
-    return default
-
-
-def safe_float(value, default=0.0):
-    try:
-        if value is None:
-            return default
-
-        result = float(value)
-
-        if math.isnan(result):
-            return default
-
-        return result
-
-    except Exception:
-        return default
-
-
-def print_section(title):
-    print()
-    print("=" * 70)
-    print(title)
-    print("=" * 70)
-
-
-# ============================================================
-# RUN ORIGINAL BACKTEST ENGINE
-# ============================================================
-
-def run_engine(candles):
-
-    print_section(
-        "STEP 2 - ORIGINAL backtest_engine.py"
-    )
-
-    result = run_backtest(
-        candles,
-        initial_balance=INITIAL_BALANCE,
-        fee_rate=FEE_RATE,
-        slippage=SLIPPAGE
-    )
-
-    print("Original engine result:")
-
-    print(json.dumps(
-        result,
-        indent=2,
-        ensure_ascii=False,
-        default=str
-    ))
-
-    return result
-
-
-# ============================================================
-# RUN FILTERED V1.5 BASELINE
-# ============================================================
-
-def run_filtered(candles):
-
-    print_section(
-        "STEP 3 - FILTERED BACKTEST v1.5"
-    )
-
-    result = run_filtered_diagnostic_v15(
-        candles,
-        initial_balance=INITIAL_BALANCE,
-        fee_rate=FEE_RATE,
-        slippage=SLIPPAGE
-    )
-
-    print("Filtered v1.5 result:")
-
-    print(json.dumps(
-        result,
-        indent=2,
-        ensure_ascii=False,
-        default=str
-    ))
-
-    return result
-
-
-# ============================================================
-# EXTRACT ORIGINAL ENGINE
-# ============================================================
-
-def extract_original(result):
-
-    if not isinstance(result, dict):
-        return {}
-
-    # Một số version có thể trả summary trực tiếp
-    if "summary" in result:
-        data = result["summary"]
-
-    elif "backtest" in result:
-        data = result["backtest"]
-
-    else:
-        data = result
-
-    trades = get_value(
-        data,
-        "trades",
-        "total_trades",
-        default=[]
-    )
-
-    if not isinstance(trades, list):
-        trades = []
-
-    return {
-        "final_balance": safe_float(
-            get_value(
-                data,
-                "final_balance",
-                "ending_balance",
-                default=None
-            )
-        ),
-
-        "profit": safe_float(
-            get_value(
-                data,
-                "profit",
-                "net_profit",
-                default=None
-            )
-        ),
-
-        "return_pct": safe_float(
-            get_value(
-                data,
-                "return_pct",
-                "return",
-                default=None
-            )
-        ),
-
-        "trades": len(trades),
-
-        "wins": safe_float(
-            get_value(
-                data,
-                "wins",
-                "winning_trades",
-                default=0
-            )
-        ),
-
-        "losses": safe_float(
-            get_value(
-                data,
-                "losses",
-                "losing_trades",
-                default=0
-            )
-        ),
-
-        "profit_factor": safe_float(
-            get_value(
-                data,
-                "profit_factor",
-                "pf",
-                default=0
-            )
-        ),
-
-        "max_drawdown_pct": safe_float(
-            get_value(
-                data,
-                "max_drawdown_pct",
-                "max_dd_pct",
-                default=0
-            )
-        ),
-
-        "fees": safe_float(
-            get_value(
-                data,
-                "fees",
-                "total_fees",
-                default=0
-            )
-        ),
-
-        "trade_list": trades
-    }
-
-
-# ============================================================
-# EXTRACT FILTERED BASELINE
-# ============================================================
-
-def extract_filtered(result):
-
-    if not isinstance(result, dict):
-        return {}
-
-    # run_filtered_diagnostic_v15()
-    # thường trả:
-    #
-    # {
-    #     "BASELINE": {...},
-    #     "REMOVE_SELL_-8_-9": {...},
-    #     ...
-    # }
-
-    if "results" in result:
-        results = result["results"]
-    else:
-        results = result
-
-    baseline = results.get("BASELINE")
-
-    if baseline is None:
-        raise RuntimeError(
-            "Không tìm thấy BASELINE trong kết quả v1.5."
+        output.append(
+            {
+                "time": int(float(row[0])),
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+                "vwap": float(row[5]),
+                "volume": float(row[6]),
+                "trades": int(float(row[7])),
+            }
         )
 
-    trades = get_value(
-        baseline,
-        "trades_detail",
-        "trades",
-        default=[]
-    )
+    if len(output) != candles:
+        raise RuntimeError(
+            f"Sau khi chuẩn hóa chỉ còn {len(output)} candles, "
+            f"cần {candles}."
+        )
 
-    if not isinstance(trades, list):
-        trades = []
+    return output
+
+
+# ============================================================
+# HELPER
+# ============================================================
+
+def to_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def find_value(obj, possible_keys):
+    """
+    Tìm key trong dictionary.
+    Hỗ trợ nested dictionary.
+    """
+
+    if isinstance(obj, dict):
+
+        for key in possible_keys:
+            if key in obj:
+                return obj[key]
+
+        for value in obj.values():
+            found = find_value(value, possible_keys)
+
+            if found is not None:
+                return found
+
+    elif isinstance(obj, list):
+
+        for item in obj:
+            found = find_value(item, possible_keys)
+
+            if found is not None:
+                return found
+
+    return None
+
+
+def normalize_result(result):
+    """
+    Chuẩn hóa output của các backtest khác nhau
+    thành một summary chung.
+    """
+
+    if result is None:
+        return {}
+
+    if not isinstance(result, dict):
+        return {}
 
     return {
-        "final_balance": safe_float(
-            baseline.get("final_balance")
-        ),
-
-        "profit": safe_float(
-            baseline.get("profit")
-        ),
-
-        "return_pct": safe_float(
-            baseline.get("return_pct")
-        ),
-
-        "trades": int(
-            safe_float(
-                baseline.get("trades"),
-                0
+        "final_balance": to_float(
+            find_value(
+                result,
+                [
+                    "final_balance",
+                    "final_balance_hypothetical",
+                ],
             )
         ),
-
-        "wins": int(
-            safe_float(
-                baseline.get("wins"),
-                0
+        "profit": to_float(
+            find_value(
+                result,
+                [
+                    "profit",
+                ],
             )
         ),
-
-        "losses": int(
-            safe_float(
-                baseline.get("losses"),
-                0
+        "return_pct": to_float(
+            find_value(
+                result,
+                [
+                    "return_pct",
+                ],
             )
         ),
-
-        "profit_factor": safe_float(
-            baseline.get("profit_factor"),
-            0
+        "trades": find_value(
+            result,
+            [
+                "trades",
+            ],
         ),
-
-        "max_drawdown_pct": safe_float(
-            baseline.get("max_drawdown_pct"),
-            0
+        "wins": find_value(
+            result,
+            [
+                "wins",
+            ],
         ),
-
-        "fees": safe_float(
-            baseline.get("fees"),
-            0
+        "losses": find_value(
+            result,
+            [
+                "losses",
+            ],
         ),
-
-        "trade_list": trades
+        "win_rate": to_float(
+            find_value(
+                result,
+                [
+                    "win_rate",
+                ],
+            )
+        ),
+        "profit_factor": to_float(
+            find_value(
+                result,
+                [
+                    "profit_factor",
+                    "pf",
+                ],
+            )
+        ),
+        "max_drawdown_pct": to_float(
+            find_value(
+                result,
+                [
+                    "max_drawdown_pct",
+                ],
+            )
+        ),
+        "fees": to_float(
+            find_value(
+                result,
+                [
+                    "fees",
+                    "total_fees",
+                ],
+            )
+        ),
     }
+
+
+# ============================================================
+# EXTRACT BASELINE FROM FILTERED V15
+# ============================================================
+
+def extract_filtered_baseline(result):
+    """
+    backtest_filtered_v15 thường trả:
+
+    {
+        "status": "ok",
+        "results": {
+            "BASELINE": {...},
+            ...
+        }
+    }
+
+    Hàm này lấy riêng BASELINE.
+    """
+
+    if not isinstance(result, dict):
+        return {}
+
+    results = result.get("results")
+
+    if isinstance(results, dict):
+
+        baseline = results.get("BASELINE")
+
+        if isinstance(baseline, dict):
+            return baseline
+
+    # Trường hợp khác nếu BASELINE nằm sâu hơn
+    baseline = find_value(
+        result,
+        ["BASELINE"]
+    )
+
+    if isinstance(baseline, dict):
+        return baseline
+
+    return {}
 
 
 # ============================================================
 # COMPARE NUMBERS
 # ============================================================
 
-def compare_number(name, a, b, tolerance=0.000001):
+def compare_number(
+    name: str,
+    a,
+    b,
+    tolerance: float = 1e-8,
+):
+    a_num = to_float(a)
+    b_num = to_float(b)
 
-    difference = abs(a - b)
+    if a_num is None or b_num is None:
+        return {
+            "name": name,
+            "a": a,
+            "b": b,
+            "difference": None,
+            "match": False,
+            "reason": "Không đọc được giá trị số",
+        }
 
-    if difference <= tolerance:
-        status = "PASS"
-    else:
-        status = "FAIL"
+    difference = abs(a_num - b_num)
 
-    print(
-        f"{name:<22} "
-        f"ENGINE={a:<15.8f} "
-        f"V1.5={b:<15.8f} "
-        f"DIFF={difference:<15.8f} "
-        f"{status}"
-    )
-
-    return difference <= tolerance
-
-
-# ============================================================
-# COMPARE TRADES
-# ============================================================
-
-def compare_trades(engine_trades, filtered_trades):
-
-    print_section(
-        "TRADE-BY-TRADE COMPARISON"
-    )
-
-    if not engine_trades:
-        print("⚠️ Original engine không có trade list.")
-        return False
-
-    if not filtered_trades:
-        print("⚠️ Filtered v1.5 không có trade list.")
-        return False
-
-    count = min(
-        len(engine_trades),
-        len(filtered_trades)
-    )
-
-    print(
-        f"ENGINE trades : {len(engine_trades)}"
-    )
-
-    print(
-        f"V1.5 trades   : {len(filtered_trades)}"
-    )
-
-    print(
-        f"Compare first : {count}"
-    )
-
-    mismatch_count = 0
-
-    for i in range(count):
-
-        a = engine_trades[i]
-        b = filtered_trades[i]
-
-        a_entry_index = get_value(
-            a,
-            "entry_index",
-            default=None
-        )
-
-        b_entry_index = get_value(
-            b,
-            "entry_index",
-            default=None
-        )
-
-        a_exit_index = get_value(
-            a,
-            "exit_index",
-            default=None
-        )
-
-        b_exit_index = get_value(
-            b,
-            "exit_index",
-            default=None
-        )
-
-        a_signal = get_value(
-            a,
-            "signal",
-            default=None
-        )
-
-        b_signal = get_value(
-            b,
-            "signal",
-            default=None
-        )
-
-        same = (
-            a_entry_index == b_entry_index
-            and
-            a_exit_index == b_exit_index
-            and
-            a_signal == b_signal
-        )
-
-        if not same:
-            mismatch_count += 1
-
-            print()
-            print(f"❌ TRADE #{i + 1}")
-
-            print("ENGINE:")
-            print(json.dumps(
-                a,
-                indent=2,
-                ensure_ascii=False,
-                default=str
-            ))
-
-            print("V1.5:")
-            print(json.dumps(
-                b,
-                indent=2,
-                ensure_ascii=False,
-                default=str
-            ))
-
-            if mismatch_count >= 5:
-                print()
-                print(
-                    "Đã dừng hiển thị sau 5 mismatch đầu tiên."
-                )
-                break
-
-    print()
-
-    if (
-        len(engine_trades) == len(filtered_trades)
-        and mismatch_count == 0
-    ):
-        print("✅ TRADE PARITY: PASS")
-        return True
-
-    print("❌ TRADE PARITY: FAIL")
-
-    return False
+    return {
+        "name": name,
+        "a": a_num,
+        "b": b_num,
+        "difference": difference,
+        "match": difference <= tolerance,
+    }
 
 
 # ============================================================
-# MAIN COMPARISON
+# RUN PARITY
 # ============================================================
 
-def main():
+def run_parity_check(
+    candles: List[Dict[str, Any]],
+    initial_balance: float = 1000.0,
+    fee_rate: float = 0.0004,
+    slippage: float = 0.0001,
+) -> Dict[str, Any]:
 
-    print()
-    print("#" * 70)
-    print("# BACKTEST v1.5 PARITY CHECK")
-    print("# Signal v1.6.1 KHÔNG THAY ĐỔI")
-    print("#" * 70)
+    if not candles:
+        raise ValueError("Candles rỗng.")
 
-    print()
-    print("Parameters:")
-    print(f"Symbol          : {SYMBOL}")
-    print(f"Candles         : {CANDLES_COUNT}")
-    print(f"Initial balance : {INITIAL_BALANCE}")
-    print(f"Fee rate        : {FEE_RATE}")
-    print(f"Slippage        : {SLIPPAGE}")
-
-    # --------------------------------------------------------
+    # ========================================================
     # QUAN TRỌNG:
-    # CHỈ LOAD KRAKEN MỘT LẦN
-    # CẢ HAI ENGINE DÙNG CÙNG candles
-    # --------------------------------------------------------
+    # Hai backtest nhận CHÍNH XÁC cùng object candles.
+    # ========================================================
 
-    candles = load_kraken_720()
-
-    # --------------------------------------------------------
-    # ORIGINAL
-    # --------------------------------------------------------
-
-    original_raw = run_engine(candles)
-
-    # --------------------------------------------------------
-    # FILTERED
-    # --------------------------------------------------------
-
-    filtered_raw = run_filtered(candles)
-
-    # --------------------------------------------------------
-    # EXTRACT
-    # --------------------------------------------------------
-
-    original = extract_original(
-        original_raw
+    engine_result = run_backtest(
+        candles,
+        initial_balance=initial_balance,
+        fee_rate=fee_rate,
+        slippage=slippage,
     )
 
-    filtered = extract_filtered(
-        filtered_raw
+    filtered_result = run_filtered_diagnostic_v15(
+        candles,
+        initial_balance=initial_balance,
+        fee_rate=fee_rate,
+        slippage=slippage,
     )
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
-    print_section(
-        "STEP 4 - PARITY SUMMARY"
+    filtered_baseline = extract_filtered_baseline(
+        filtered_result
     )
 
-    print()
-
-    print(
-        f"{'Metric':<22}"
-        f"{'ENGINE':<18}"
-        f"{'V1.5 BASELINE':<18}"
-        f"RESULT"
+    engine_summary = normalize_result(
+        engine_result
     )
 
-    print("-" * 75)
-
-    checks = []
-
-    checks.append(
-        compare_number(
-            "Final Balance",
-            original["final_balance"],
-            filtered["final_balance"]
-        )
+    filtered_summary = normalize_result(
+        filtered_baseline
     )
 
-    checks.append(
-        compare_number(
-            "Profit",
-            original["profit"],
-            filtered["profit"]
-        )
-    )
+    # ========================================================
+    # SO SÁNH
+    # ========================================================
 
-    checks.append(
-        compare_number(
-            "Return %",
-            original["return_pct"],
-            filtered["return_pct"]
-        )
-    )
+    comparisons = []
 
-    checks.append(
-        compare_number(
-            "Trades",
-            original["trades"],
-            filtered["trades"],
-            tolerance=0
-        )
-    )
+    fields = [
+        "final_balance",
+        "profit",
+        "return_pct",
+        "trades",
+        "wins",
+        "losses",
+        "win_rate",
+        "profit_factor",
+        "max_drawdown_pct",
+        "fees",
+    ]
 
-    checks.append(
-        compare_number(
-            "Wins",
-            original["wins"],
-            filtered["wins"],
-            tolerance=0
-        )
-    )
+    for field in fields:
 
-    checks.append(
-        compare_number(
-            "Losses",
-            original["losses"],
-            filtered["losses"],
-            tolerance=0
-        )
-    )
+        tolerance = 1e-8
 
-    checks.append(
-        compare_number(
-            "Profit Factor",
-            original["profit_factor"],
-            filtered["profit_factor"]
-        )
-    )
+        if field in [
+            "trades",
+            "wins",
+            "losses",
+        ]:
+            tolerance = 0.0
 
-    checks.append(
-        compare_number(
-            "Max Drawdown %",
-            original["max_drawdown_pct"],
-            filtered["max_drawdown_pct"]
-        )
-    )
-
-    checks.append(
-        compare_number(
-            "Fees",
-            original["fees"],
-            filtered["fees"]
-        )
-    )
-
-    # --------------------------------------------------------
-    # TRADE COMPARISON
-    # --------------------------------------------------------
-
-    trade_parity = compare_trades(
-        original["trade_list"],
-        filtered["trade_list"]
-    )
-
-    checks.append(trade_parity)
-
-    # --------------------------------------------------------
-    # FINAL
-    # --------------------------------------------------------
-
-    print_section(
-        "FINAL RESULT"
-    )
-
-    passed = sum(
-        1 for x in checks
-        if x
-    )
-
-    total = len(checks)
-
-    print(
-        f"PASS: {passed}/{total}"
-    )
-
-    if passed == total:
-
-        print()
-        print(
-            "✅ PARITY CHECK PASSED"
+        comparisons.append(
+            compare_number(
+                field,
+                engine_summary.get(field),
+                filtered_summary.get(field),
+                tolerance=tolerance,
+            )
         )
 
-        print()
-        print(
-            "backtest_filtered_v15.py BASELINE "
-            "khớp với backtest_engine.py."
-        )
+    all_match = all(
+        item["match"]
+        for item in comparisons
+    )
 
-        print(
-            "Có thể tiếp tục kiểm tra các filter."
-        )
+    mismatches = [
+        item
+        for item in comparisons
+        if not item["match"]
+    ]
 
-    else:
+    # ========================================================
+    # TRADE COUNT
+    # ========================================================
 
-        print()
-        print(
-            "❌ PARITY CHECK FAILED"
-        )
+    engine_trades = find_value(
+        engine_result,
+        ["trades_detail", "trades"]
+    )
 
-        print()
-        print(
-            "KHÔNG được sửa Signal v1.6.1."
-        )
+    filtered_trades = find_value(
+        filtered_baseline,
+        ["trades_detail", "trades"]
+    )
 
-        print(
-            "KHÔNG được chuyển sang Paper Trading."
-        )
+    engine_trade_count = (
+        len(engine_trades)
+        if isinstance(engine_trades, list)
+        else None
+    )
 
-        print()
-        print(
-            "Cần sửa sai lệch giữa "
-            "backtest_filtered_v15.py "
-            "và backtest_engine.py trước."
-        )
+    filtered_trade_count = (
+        len(filtered_trades)
+        if isinstance(filtered_trades, list)
+        else None
+    )
 
-    print()
+    # ========================================================
+    # RESULT
+    # ========================================================
 
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "method": (
+            "Same frozen candle list -> "
+            "backtest_engine.py vs "
+            "backtest_filtered_v15.py BASELINE"
+        ),
+        "candles": len(candles),
+        "parameters": {
+            "initial_balance": initial_balance,
+            "fee_rate": fee_rate,
+            "slippage": slippage,
+        },
+        "engine": {
+            "summary": engine_summary,
+            "trade_count_from_detail": engine_trade_count,
+        },
+        "filtered_v15_baseline": {
+            "summary": filtered_summary,
+            "trade_count_from_detail": filtered_trade_count,
+        },
+        "comparison": comparisons,
+        "parity": {
+            "status": "PASS" if all_match else "FAIL",
+            "all_core_metrics_match": all_match,
+            "mismatch_count": len(mismatches),
+        },
+        "mismatches": mismatches,
+    }
+
+
+# ============================================================
+# STANDALONE TEST
+# ============================================================
 
 if __name__ == "__main__":
-    main()
+
+    print("=" * 70)
+    print("BACKTEST PARITY CHECK v1.5")
+    print("=" * 70)
+
+    candles = load_kraken_candles(
+        "BTCUSDT",
+        720,
+    )
+
+    print(f"Loaded candles: {len(candles)}")
+
+    result = run_parity_check(
+        candles,
+        initial_balance=1000.0,
+        fee_rate=0.0004,
+        slippage=0.0001,
+    )
+
+    print()
+    print("=" * 70)
+    print("PARITY RESULT")
+    print("=" * 70)
+
+    print(
+        result["parity"]
+    )
+
+    print()
+    print("ENGINE:")
+    print(
+        result["engine"]["summary"]
+    )
+
+    print()
+    print("FILTERED V15 BASELINE:")
+    print(
+        result["filtered_v15_baseline"]["summary"]
+    )
+
+    print()
+    print("COMPARISON:")
+
+    for item in result["comparison"]:
+        print(
+            f"{item['name']}: "
+            f"{item['match']} | "
+            f"A={item['a']} | "
+            f"B={item['b']} | "
+            f"Diff={item['difference']}"
+        )
+
+    print()
+
+    if result["parity"]["status"] == "PASS":
+        print(">>> PARITY CHECK: PASS")
+    else:
+        print(">>> PARITY CHECK: FAIL")
+        print()
+        print("MISMATCHES:")
+
+        for item in result["mismatches"]:
+            print(item)
