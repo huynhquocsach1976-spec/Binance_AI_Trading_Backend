@@ -1,4 +1,3 @@
-```python
 import math
 import pandas as pd
 import numpy as np
@@ -1428,4 +1427,3 @@ if __name__ == "__main__":
     print(
         "run_filtered_diagnostic_v15 = OK"
     )
-```
