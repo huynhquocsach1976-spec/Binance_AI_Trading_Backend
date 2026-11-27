@@ -34,6 +34,14 @@ jobs:
       - name: Run paper trader
         run: python paper_trader.py
 
+      - name: Send email if new signal
+        continue-on-error: true
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python send_email.py
+
       - name: Commit paper trading results
         run: |
           git config user.name "paper-trading-bot"
