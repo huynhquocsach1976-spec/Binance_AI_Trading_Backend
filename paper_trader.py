@@ -10,6 +10,7 @@ FEE, SLIP = 0.001, 0.0002        # phí 0.1% + trượt giá 0.02% mỗi chiều
 RISK = 0.01                      # rủi ro tối đa 1% vốn mỗi lệnh
 START_EQUITY = 1000.0
 DIR = "paper_trading"
+EVENTS = []   # thông báo của lần chạy này (gửi email nếu có)
 
 def fetch_daily():
     url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1440"
@@ -61,6 +62,7 @@ def process(df_all, state, now_date):
             size = min(1.0, RISK / ((ep - stop) / ep))
             state.update(pos=1, entry=ep, stop=stop, size=size, entry_date=r.date)
             append_csv(f"{DIR}/log.csv", ["date","event","price","detail"], [r.date, "BUY", round(ep,2), f"stop={stop:.2f} size={size*100:.1f}% vốn"])
+            EVENTS.append(f"[{r.date}] ĐÃ MUA (lệnh giả) BTC giá {ep:,.0f} | dừng lỗ {stop:,.0f} | {size*100:.1f}% vốn")
         elif pd_ == "SELL" and state["pos"] == 1:
             state = close_pos(state, r.date, r.open * (1 - SLIP), "TÍN HIỆU (EMA cắt xuống)")
         state["pending"] = None
@@ -71,8 +73,10 @@ def process(df_all, state, now_date):
         if i >= 1 and np.isfinite(r.atr):
             if state["pos"] == 0 and r.ef > r.es and d.ef[i-1] <= d.es[i-1]:
                 state["pending"] = "BUY"; state["pending_atr"] = float(r.atr)
+                EVENTS.append(f"[{r.date}] TÍN HIỆU MUA: EMA{FAST} cắt lên EMA{SLOW}. Lệnh giả sẽ vào ở giá mở cửa ngày kế tiếp.")
             elif state["pos"] == 1 and r.ef < r.es:
                 state["pending"] = "SELL"
+                EVENTS.append(f"[{r.date}] TÍN HIỆU BÁN: EMA{FAST} cắt xuống EMA{SLOW}. Lệnh giả sẽ thoát ở giá mở cửa ngày kế tiếp.")
         state["last_date"] = r.date
     return state, d
 
@@ -83,6 +87,7 @@ def close_pos(state, date, xp, reason):
     append_csv(f"{DIR}/trades.csv", ["entry_date","exit_date","entry","exit","size_pct","pnl_pct","equity","reason"],
                [state["entry_date"], date, round(state["entry"],2), round(xp,2), round(state["size"]*100,1), round(pnl*100,2), round(state["equity"],2), reason])
     append_csv(f"{DIR}/log.csv", ["date","event","price","detail"], [date, "SELL", round(xp,2), f"{reason} pnl={pnl*100:.2f}%"])
+    EVENTS.append(f"[{date}] ĐÃ ĐÓNG (lệnh giả) giá {xp:,.0f} | {reason} | lãi/lỗ {pnl*100:+.2f}% | vốn giả {state['equity']:.2f}")
     state.update(pos=0, entry=0, stop=0, size=0, entry_date="")
     return state
 
@@ -113,6 +118,7 @@ def main(df_all=None, now_date=None):
     state, d = process(df_all, load_state(), now_date)
     json.dump(state, open(f"{DIR}/state.json", "w"), indent=1)
     summary(state, d, now_date)
+    open(os.environ.get("NOTIFY_FILE", "notify.txt"), "w").write("\n".join(EVENTS))
 
 if __name__ == "__main__":
     main()
